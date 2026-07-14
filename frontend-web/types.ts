@@ -230,6 +230,32 @@ export interface VideoTimebaseRequest {
   source_duration_ms?: number;
 }
 
+/** Request body for POST /projects/{id}/refine (openapi: RefineRequest). */
+export interface RefineRequest {
+  /** true=直接套用提議 offset；false=只提議，交編輯器 PATCH 確認。 */
+  apply_offsets?: boolean;
+  params?: Record<string, unknown>;
+}
+
+/** AI 逐字稿定位笑點的校正提議（openapi: ProposedOffset）。 */
+export interface ProposedOffset {
+  highlight_id: string;
+  current_start_ms: number;
+  proposed_start_ms: number;
+  /** 往前抓為負、延後為正。 */
+  offset_ms: number;
+  evidence_text?: string | null;
+}
+
+/** Response of POST /projects/{id}/refine (openapi: RefineResult). */
+export interface RefineResult {
+  project_id: string;
+  proposed_offsets: ProposedOffset[];
+  annotations: Annotations;
+  transcript_segment_count: number;
+  applied: number;
+}
+
 /** Request body for PATCH /projects/{id}/highlights/{highlight_id} (openapi: HighlightPatch). */
 export interface HighlightPatch {
   /** 事件窗相對目前窗的位移；往前抓為負（如 -20000）、延後為正。累加進 correction.offset_ms。 */

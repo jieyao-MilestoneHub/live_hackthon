@@ -39,6 +39,9 @@ __all__ = [
     "DimensionSpan",
     "Annotation",
     "Annotations",
+    "RefineRequest",
+    "ProposedOffset",
+    "RefineResult",
     "TimelineClip",
     "Timeline",
     "ComposeRequest",
@@ -286,6 +289,36 @@ class Annotations(BaseModel):
     annotation_version: str | None = None
     annotations: list[Annotation] = Field(default_factory=list)
     created_at: str | None = None
+
+
+class RefineRequest(BaseModel):
+    """POST /projects/{id}/refine request body (all optional)."""
+
+    apply_offsets: bool = Field(
+        default=False,
+        description="true=直接把提議的笑點 offset 套用到 highlights；false=只回提議，交編輯器 PATCH 確認",
+    )
+    params: dict | None = Field(default=None, description="精修參數覆寫（lead_ms 等）")
+
+
+class ProposedOffset(BaseModel):
+    """AI 逐字稿定位笑點的校正提議（annotations/highlights 之外的建議）。"""
+
+    highlight_id: str
+    current_start_ms: int
+    proposed_start_ms: int
+    offset_ms: int
+    evidence_text: str | None = None
+
+
+class RefineResult(BaseModel):
+    """POST /projects/{id}/refine response."""
+
+    project_id: str
+    proposed_offsets: list[ProposedOffset] = Field(default_factory=list)
+    annotations: Annotations
+    transcript_segment_count: int
+    applied: int = 0
 
 
 class TimelineClip(BaseModel):

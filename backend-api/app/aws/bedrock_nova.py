@@ -110,3 +110,96 @@ class StubNovaReviewer:
         complex_case: bool = False,
     ) -> str:
         return "unknown"
+
+
+# --- Narrative enrichment（高光敘事精修，NarrativeReviewerPort）---------------
+
+_NARRATIVE_TOOL_NAME = "write_highlight_narrative"
+_NARRATIVE_SYSTEM_PROMPT = (
+    "你是短影音剪輯的敘事助手。依提供的逐字稿與聊天室摘要，為這個高光片段寫出："
+    "(1) 一句話描述『這橋段在幹嘛、為什麼好笑』；(2) 每個敘事維度（埋梗/反應/笑點）的簡短說明；"
+    "(3) 每個節拍的代表台詞（可引用逐字稿）。用繁體中文，精簡、口語、忠於逐字稿，不得杜撰事實。"
+)
+
+
+def build_narrative_tool_config() -> dict[str, Any]:
+    """組出敘事精修的 toolConfig：強制單一工具、輸出 description/dimension_texts/beat_lines。"""
+    return {
+        "toolChoice": {"tool": {"name": _NARRATIVE_TOOL_NAME}},
+        "tools": [{
+            "toolSpec": {
+                "name": _NARRATIVE_TOOL_NAME,
+                "description": "為一個高光片段產出敘事文字（描述、各維度說明、各節拍台詞）。",
+                "inputSchema": {"json": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string"},
+                        "dimension_texts": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                        },
+                        "beat_lines": {
+                            "type": "object",
+                            "additionalProperties": {"type": "string"},
+                        },
+                    },
+                    "required": ["description"],
+                }},
+            }
+        }],
+    }
+
+
+def extract_narrative(response: dict[str, Any]) -> dict[str, Any]:
+    """從 Converse 回應取出 toolUse.input（description/dimension_texts/beat_lines）；缺則給保底。"""
+    content = (response.get("output", {}).get("message", {}) or {}).get("content", []) or []
+    for block in content:
+        tool = block.get("toolUse")
+        if tool and tool.get("name") == _NARRATIVE_TOOL_NAME:
+            data = tool.get("input") or {}
+            return {
+                "description": data.get("description") or "",
+                "dimension_texts": data.get("dimension_texts") or {},
+                "beat_lines": data.get("beat_lines") or {},
+            }
+    return {"description": "", "dimension_texts": {}, "beat_lines": {}}
+
+
+class RealNarrativeReviewer:
+    """boto3 Bedrock Nova（Converse + 強制 tool use）產生高光敘事。"""
+
+    def __init__(self, settings: Settings, config: AttributionConfig) -> None:
+        import boto3  # lazy
+
+        self._settings = settings
+        self._config = config
+        self._client = boto3.client("bedrock-runtime", region_name=config.bedrock_region)
+
+    def enrich(self, context: dict[str, Any]) -> dict[str, Any]:
+        import json
+
+        resp = self._client.converse(
+            modelId=self._config.nova_reasoning_model_id,
+            system=[{"text": _NARRATIVE_SYSTEM_PROMPT}],
+            messages=[{"role": "user", "content": [{"text": json.dumps(context, ensure_ascii=False)}]}],
+            inferenceConfig={"temperature": 0, "topP": 1, "maxTokens": 800},
+            toolConfig=build_narrative_tool_config(),
+        )
+        return extract_narrative(resp)
+
+
+class StubNarrativeReviewer:
+    """離線替身：由 context 的逐字稿確定性回填（供離線端到端測試；真值上 AWS）。"""
+
+    def __init__(self, settings: Settings, config: AttributionConfig) -> None:
+        self._settings = settings
+        self._config = config
+
+    def enrich(self, context: dict[str, Any]) -> dict[str, Any]:
+        text = (context.get("transcript_text") or "").strip()
+        title = context.get("title") or "高光片段"
+        snippet = text[:24] if text else "（無逐字稿）"
+        description = f"（AI草稿）{title}：{text[:40]}" if text else f"（AI草稿）{title}"
+        dimension_texts = {dim: f"{dim}：{snippet}" for dim in (context.get("dimensions") or [])}
+        beat_lines = {str(order): snippet for order in (context.get("beats") or [])}
+        return {"description": description, "dimension_texts": dimension_texts, "beat_lines": beat_lines}
