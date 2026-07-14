@@ -29,7 +29,8 @@ from analysis.validate import load_sample  # noqa: E402
 from app.repository import get_repository  # noqa: E402
 from app.settings import get_settings  # noqa: E402
 from app.state import ProjectState, assert_project_transition  # noqa: E402
-from workers import analysis_worker, composer_worker  # noqa: E402
+from app.storage import get_storage  # noqa: E402
+from workers import analysis_worker, composer_worker, creative_worker  # noqa: E402
 
 # Path from CREATED to ANALYZING that the real S3-event pipeline would drive.
 _TO_ANALYZING = [ProjectState.UPLOAD_PENDING, ProjectState.UPLOADING, ProjectState.ANALYZING]
@@ -46,6 +47,7 @@ def main() -> int:
     parser.add_argument("--project-id", default=None, help="existing project id (default: create one)")
     parser.add_argument("--transcript", default=None, help="path to a transcript.v1 JSON (default: sample)")
     parser.add_argument("--target-ms", type=int, default=30000, help="target duration ms (new project)")
+    parser.add_argument("--render", action="store_true", help="also submit a render (Creative Planning -> QUEUED)")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -86,6 +88,15 @@ def main() -> int:
         f"{len(timeline['clips'])} clips, actual={timeline['actual_duration_ms']}ms "
         f"(target={timeline['target_duration_ms']}ms), status -> READY_TO_EDIT"
     )
+
+    if args.render:
+        render = creative_worker.submit_render(repo, get_storage(), project_id)
+        print(
+            f"[pipeline] render   -> {render['render_id']}, status -> {render['status']}, "
+            f"effect_seed={render['effect_seed']}, timeline v{render['timeline_version']}, "
+            f"render_spec_key={render.get('render_spec_key')}"
+        )
+
     print(f"[pipeline] DONE. project_id = {project_id}")
     return 0
 

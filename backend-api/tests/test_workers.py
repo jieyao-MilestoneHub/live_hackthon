@@ -5,7 +5,7 @@ import pytest
 
 from analysis.validate import load_sample
 from app.repository import get_repository
-from app.state import ProjectState, assert_project_transition
+from app.state import ProjectState, RenderState, assert_project_transition
 from workers import analysis_worker, composer_worker
 
 
@@ -92,3 +92,47 @@ def test_scores_survive_dynamo_roundtrip(aws) -> None:
         # score like 1.0 legitimately comes back as int 1 — both valid JSON).
         assert isinstance(h["score"], (int, float))
         assert 0.0 <= h["score"] <= 1.0
+
+
+def _ready_to_edit(repo) -> str:
+    pid = _seed_project(repo)
+    analysis_worker.run(repo, pid, load_sample("transcript.sample.json"))
+    composer_worker.run(repo, pid)
+    return pid
+
+
+def test_creative_worker_queues_and_persists_plans(aws) -> None:
+    from analysis.validate import validate_effects, validate_render_spec, validate_subtitle
+    from app.settings import get_settings
+    from app.storage import get_storage
+    from workers import creative_worker
+
+    repo = get_repository()
+    storage = get_storage()
+    settings = get_settings()
+    pid = _ready_to_edit(repo)
+
+    render = creative_worker.submit_render(repo, storage, pid)
+    rid = render["render_id"]
+
+    assert render["status"] == RenderState.QUEUED.value
+    assert render["render_spec_key"]
+    assert render["timeline_version"] == 1
+
+    # Project advanced + latest_render_id recorded.
+    project = repo.get_project(pid)
+    assert project["status"] == ProjectState.RENDER_REQUESTED.value
+    assert project["latest_render_id"] == rid
+
+    # Three plan docs written to the Work bucket, each valid against its contract.
+    sub = storage.get_json(settings.work_bucket, settings.render_key("demo", pid, rid, "subtitle.json"))
+    eff = storage.get_json(settings.work_bucket, settings.render_key("demo", pid, rid, "effect-plan.json"))
+    spec = storage.get_json(settings.work_bucket, settings.render_key("demo", pid, rid, "render-spec.json"))
+    validate_subtitle(sub)
+    validate_effects(eff)
+    validate_render_spec(spec)
+    assert eff["effect_seed"] == render["effect_seed"]
+    assert spec["effect_seed"] == render["effect_seed"]
+
+    # Top-level lookup resolves render_id -> render.
+    assert repo.get_render_by_id(rid)["render_id"] == rid

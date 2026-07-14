@@ -36,6 +36,23 @@ class Settings:
         """Raw-bucket object key per demand.md §十六."""
         return f"tenant={tenant_id}/project={project_id}/source/{filename}"
 
+    def _project_prefix(self, tenant_id: str, project_id: str) -> str:
+        return f"tenant={tenant_id}/project={project_id}"
+
+    def timeline_key(self, tenant_id: str, project_id: str, version: int) -> str:
+        """Work-bucket key for a timeline version (§十六)."""
+        return f"{self._project_prefix(tenant_id, project_id)}/timelines/version={version}/timeline.json"
+
+    def render_key(self, tenant_id: str, project_id: str, render_id: str, filename: str) -> str:
+        """Work-bucket key for a render's plan file (§十六)."""
+        return f"{self._project_prefix(tenant_id, project_id)}/renders/render={render_id}/{filename}"
+
+    def artifact_output_key(
+        self, tenant_id: str, project_id: str, artifact_id: str, filename: str
+    ) -> str:
+        """Output-bucket key for a published artifact file (§十六)."""
+        return f"{self._project_prefix(tenant_id, project_id)}/artifacts/artifact={artifact_id}/{filename}"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

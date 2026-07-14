@@ -78,9 +78,7 @@ def test_unknown_project_404(client) -> None:
 
 
 def test_unimplemented_endpoints_return_501(client) -> None:
-    # highlights/timeline/compose are wired in M2; renders/artifacts stay stubs.
-    assert client.post("/projects/proj/renders", json={}).status_code == 501
-    assert client.get("/renders/render-xyz").status_code == 501
+    # M3 wires renders; only artifact download remains a stub (M4).
     assert client.get("/artifacts/artifact-xyz/download").status_code == 501
 
 
@@ -134,3 +132,43 @@ def test_put_timeline_appends_new_version(client, ready_project) -> None:
     r = client.put(f"/projects/{ready_project}/timeline", json=edited)
     assert r.status_code == 200
     assert r.json()["timeline_version"] == current["version"] + 1
+
+
+# --- M3 render submission -------------------------------------------------
+
+
+def test_create_render(client, ready_project) -> None:
+    r = client.post(f"/projects/{ready_project}/renders", json={})
+    assert r.status_code == 202
+    body = r.json()
+    assert body["render_id"].startswith("render-")
+    assert body["status"] == "QUEUED"
+    # Project advanced to RENDER_REQUESTED.
+    assert client.get(f"/projects/{ready_project}").json()["status"] == "RENDER_REQUESTED"
+
+
+def test_get_render(client, ready_render) -> None:
+    project_id, render_id = ready_render
+    r = client.get(f"/renders/{render_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["render_id"] == render_id
+    assert body["project_id"] == project_id
+    assert body["status"] == "QUEUED"
+    assert body["timeline_version"] == 1
+    assert isinstance(body["effect_seed"], int)
+
+
+def test_render_on_non_ready_project_409(client) -> None:
+    pid = client.post("/projects", json={"target_duration_ms": 30000}).json()["project_id"]
+    assert client.post(f"/projects/{pid}/renders", json={}).status_code == 409
+
+
+def test_get_render_unknown_404(client) -> None:
+    assert client.get("/renders/render-does-not-exist").status_code == 404
+
+
+def test_artifact_download_still_501(client, ready_render) -> None:
+    _, render_id = ready_render
+    artifact_id = client.get(f"/renders/{render_id}").json()["artifact_id"]
+    assert client.get(f"/artifacts/{artifact_id}/download").status_code == 501

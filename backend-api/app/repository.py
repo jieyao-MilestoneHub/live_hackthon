@@ -38,6 +38,18 @@ def _timeline_sk(version: int) -> str:
     return f"{_TIMELINE_SK_PREFIX}{int(version):06d}"
 
 
+_RENDER_SK_PREFIX = "RENDER#"
+_POINTER_SK = "POINTER"
+
+
+def _render_pk(render_id: str) -> str:
+    return f"RENDER#{render_id}"
+
+
+def _render_sk(render_id: str) -> str:
+    return f"{_RENDER_SK_PREFIX}{render_id}"
+
+
 class ProjectRepository(abc.ABC):
     """Persistence port for the Project META item."""
 
@@ -79,6 +91,22 @@ class ProjectRepository(abc.ABC):
     def get_timeline(self, project_id: str, version: int | None = None) -> dict[str, Any] | None:
         """Return a timeline version (latest if ``version`` is None), or ``None``."""
 
+    @abc.abstractmethod
+    def put_render(self, project_id: str, render: dict[str, Any]) -> None:
+        """Persist a Render item (SK ``RENDER#{render_id}``) + a render_id pointer."""
+
+    @abc.abstractmethod
+    def get_render(self, project_id: str, render_id: str) -> dict[str, Any] | None:
+        """Return the Render item, or ``None`` if absent."""
+
+    @abc.abstractmethod
+    def get_render_by_id(self, render_id: str) -> dict[str, Any] | None:
+        """Resolve a render_id (via pointer) to its Render item, or ``None``."""
+
+    @abc.abstractmethod
+    def update_render(self, project_id: str, render_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        """Apply ``patch`` to a Render item. Raises ``KeyError`` if absent."""
+
 
 class InMemoryProjectRepository(ProjectRepository):
     """Process-local store for offline dev / tests."""
@@ -87,6 +115,8 @@ class InMemoryProjectRepository(ProjectRepository):
         self._items: dict[str, dict[str, Any]] = {}
         self._highlights: dict[str, list[dict[str, Any]]] = {}
         self._timelines: dict[str, dict[int, dict[str, Any]]] = {}
+        self._renders: dict[tuple[str, str], dict[str, Any]] = {}
+        self._render_pointers: dict[str, str] = {}
 
     def create_project(self, item: dict[str, Any]) -> dict[str, Any]:
         project_id = item["project_id"]
@@ -131,6 +161,27 @@ class InMemoryProjectRepository(ProjectRepository):
         target = max(versions) if version is None else version
         found = versions.get(target)
         return copy.deepcopy(found) if found is not None else None
+
+    def put_render(self, project_id: str, render: dict[str, Any]) -> None:
+        render_id = render["render_id"]
+        self._renders[(project_id, render_id)] = copy.deepcopy(render)
+        self._render_pointers[render_id] = project_id
+
+    def get_render(self, project_id: str, render_id: str) -> dict[str, Any] | None:
+        found = self._renders.get((project_id, render_id))
+        return copy.deepcopy(found) if found is not None else None
+
+    def get_render_by_id(self, render_id: str) -> dict[str, Any] | None:
+        project_id = self._render_pointers.get(render_id)
+        return self.get_render(project_id, render_id) if project_id else None
+
+    def update_render(self, project_id: str, render_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        current = self._renders.get((project_id, render_id))
+        if current is None:
+            raise KeyError(f"render {render_id} not found")
+        current.update(patch)
+        current["updated_at"] = _now_iso()
+        return copy.deepcopy(current)
 
 
 def _coerce_numbers(value: Any) -> Any:
@@ -293,6 +344,57 @@ class DynamoProjectRepository(ProjectRepository):
         )
         items = resp.get("Items", [])
         return self._strip_keys(items[0]) if items else None
+
+    def put_render(self, project_id: str, render: dict[str, Any]) -> None:
+        render_id = render["render_id"]
+        record = {
+            _PK: _project_pk(project_id),
+            _SK: _render_sk(render_id),
+            **{k: v for k, v in render.items() if v is not None},
+        }
+        self._table.put_item(Item=_to_dynamo(record))
+        # Pointer item so a bare render_id (top-level route) resolves to its project.
+        self._table.put_item(
+            Item={_PK: _render_pk(render_id), _SK: _POINTER_SK, "project_id": project_id}
+        )
+
+    def get_render(self, project_id: str, render_id: str) -> dict[str, Any] | None:
+        resp = self._table.get_item(Key={_PK: _project_pk(project_id), _SK: _render_sk(render_id)})
+        item = resp.get("Item")
+        return self._strip_keys(item) if item else None
+
+    def get_render_by_id(self, render_id: str) -> dict[str, Any] | None:
+        resp = self._table.get_item(Key={_PK: _render_pk(render_id), _SK: _POINTER_SK})
+        pointer = resp.get("Item")
+        if not pointer:
+            return None
+        return self.get_render(pointer["project_id"], render_id)
+
+    def update_render(self, project_id: str, render_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        set_parts = ["updated_at = :now"]
+        names: dict[str, str] = {}
+        values: dict[str, Any] = {":now": _now_iso()}
+        for i, (k, v) in enumerate(patch.items()):
+            names[f"#f{i}"] = k
+            values[f":v{i}"] = v
+            set_parts.append(f"#f{i} = :v{i}")
+
+        from botocore.exceptions import ClientError
+
+        try:
+            resp = self._table.update_item(
+                Key={_PK: _project_pk(project_id), _SK: _render_sk(render_id)},
+                UpdateExpression="SET " + ", ".join(set_parts),
+                ConditionExpression="attribute_exists(#pk)",
+                ExpressionAttributeNames={**names, "#pk": _PK},
+                ExpressionAttributeValues=_to_dynamo(values),
+                ReturnValues="ALL_NEW",
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise KeyError(f"render {render_id} not found") from exc
+            raise
+        return self._strip_keys(resp["Attributes"])
 
 
 @lru_cache(maxsize=1)

@@ -26,6 +26,9 @@ __all__ = [
     "TimelineClip",
     "Timeline",
     "ComposeRequest",
+    "RenderCreate",
+    "RenderCreated",
+    "Render",
 ]
 
 
@@ -150,3 +153,36 @@ class ComposeRequest(BaseModel):
     target_duration_ms: int | None = Field(default=None, ge=1000, le=60000)
     locked_highlight_ids: list[str] | None = None
     excluded_highlight_ids: list[str] | None = None
+
+
+class RenderCreate(BaseModel):
+    """POST /projects/{id}/renders request body (optional)."""
+
+    timeline_version: int | None = Field(
+        default=None, description="省略則使用 latest_timeline_version"
+    )
+
+
+class RenderCreated(BaseModel):
+    """POST /projects/{id}/renders 202 response."""
+
+    render_id: str
+    status: RenderState
+
+
+class Render(BaseModel):
+    """GET /renders/{render_id} response (Render Job item projection)."""
+
+    render_id: str
+    project_id: str
+    status: RenderState
+    current_stage: str | None = None
+    timeline_version: int
+    effect_seed: int | None = None
+    batch_job_id: str | None = None
+    artifact_id: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None

@@ -27,6 +27,9 @@ from app.schemas import (
     Project,
     ProjectCreate,
     ProjectCreated,
+    Render,
+    RenderCreate,
+    RenderCreated,
     Timeline,
     UploadSession,
     UploadSessionCreate,
@@ -34,7 +37,7 @@ from app.schemas import (
 from app.settings import get_settings
 from app.state import InvalidTransition, ProjectState, assert_project_transition
 from app.storage import Storage, get_storage, resolve_part_count
-from workers import composer_worker
+from workers import composer_worker, creative_worker
 
 
 def _now_iso() -> str:
@@ -250,14 +253,36 @@ def compose_project_timeline(
     return {"timeline_version": timeline["version"]}
 
 
-@app.post("/projects/{id}/renders")
-def create_render(id: str) -> dict:  # noqa: ARG001
-    raise _not_implemented("render submission (M3/M4)")
+@app.post("/projects/{id}/renders", response_model=RenderCreated, status_code=202)
+def create_render(
+    id: str,
+    body: RenderCreate | None = None,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> RenderCreated:
+    # MVP shim: run Creative Planning (subtitle/effects/render_spec) inline, then
+    # QUEUED for FFmpeg (M4). TODO(async): enqueue to the ai-task queue.
+    if repo.get_project(id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    req = body or RenderCreate()
+    try:
+        render = creative_worker.submit_render(repo, storage, id, req.timeline_version)
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return RenderCreated(render_id=render["render_id"], status=render["status"])
 
 
-@app.get("/renders/{render_id}")
-def get_render(render_id: str) -> dict:  # noqa: ARG001
-    raise _not_implemented("render status (M3/M4)")
+@app.get("/renders/{render_id}", response_model=Render)
+def get_render(
+    render_id: str,
+    repo: ProjectRepository = Depends(get_repository),
+) -> Render:
+    render = repo.get_render_by_id(render_id)
+    if render is None:
+        raise HTTPException(status_code=404, detail="render not found")
+    return Render(**render)
 
 
 @app.get("/artifacts/{artifact_id}/download")

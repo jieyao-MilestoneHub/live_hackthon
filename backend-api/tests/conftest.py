@@ -11,6 +11,8 @@ import pytest
 
 TABLE = "VideoEditor"
 RAW_BUCKET = "video-editor-raw-test"
+WORK_BUCKET = "video-editor-work-test"
+OUTPUT_BUCKET = "video-editor-output-test"
 REGION = "us-east-1"
 
 
@@ -29,6 +31,8 @@ def aws(monkeypatch):
     monkeypatch.setenv("AWS_REGION", REGION)
     monkeypatch.setenv("DYNAMODB_TABLE", TABLE)
     monkeypatch.setenv("RAW_BUCKET", RAW_BUCKET)
+    monkeypatch.setenv("WORK_BUCKET", WORK_BUCKET)
+    monkeypatch.setenv("OUTPUT_BUCKET", OUTPUT_BUCKET)
     monkeypatch.setenv("ENV", "test")
     # Fake creds so boto3/moto never touches real AWS.
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
@@ -56,7 +60,9 @@ def aws(monkeypatch):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-        boto3.client("s3", region_name=REGION).create_bucket(Bucket=RAW_BUCKET)
+        s3 = boto3.client("s3", region_name=REGION)
+        for bucket in (RAW_BUCKET, WORK_BUCKET, OUTPUT_BUCKET):
+            s3.create_bucket(Bucket=bucket)
         yield
 
     _clear_caches()
@@ -94,3 +100,17 @@ def ready_project(client):
     analysis_worker.run(repo, project_id, load_sample("transcript.sample.json"))
     composer_worker.run(repo, project_id)
     return project_id
+
+
+@pytest.fixture()
+def ready_render(ready_project):
+    """A submitted render (status QUEUED) on a READY_TO_EDIT project.
+
+    Returns (project_id, render_id).
+    """
+    from app.repository import get_repository
+    from app.storage import get_storage
+    from workers import creative_worker
+
+    render = creative_worker.submit_render(get_repository(), get_storage(), ready_project)
+    return ready_project, render["render_id"]

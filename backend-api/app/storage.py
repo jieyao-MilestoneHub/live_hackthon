@@ -8,6 +8,7 @@ keeps local uvicorn / offline tests working without AWS credentials.
 from __future__ import annotations
 
 import abc
+import json
 import math
 import uuid
 from functools import lru_cache
@@ -41,12 +42,21 @@ class Storage(abc.ABC):
     def presigned_get(self, bucket: str, key: str) -> str:
         """Return a presigned GET URL for downloading an object."""
 
+    @abc.abstractmethod
+    def put_json(self, bucket: str, key: str, doc: dict[str, Any]) -> str:
+        """Write ``doc`` as JSON to ``bucket/key``. Returns the key."""
+
+    @abc.abstractmethod
+    def get_json(self, bucket: str, key: str) -> dict[str, Any]:
+        """Read+parse the JSON object at ``bucket/key``. Raises ``KeyError`` if absent."""
+
 
 class StubStorage(Storage):
-    """No-AWS stub: fabricates local placeholder URLs."""
+    """No-AWS stub: fabricates local placeholder URLs, keeps objects in-process."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._objects: dict[tuple[str, str], str] = {}
 
     def create_upload_session(
         self, key: str, part_count: int, content_type: str | None = None
@@ -69,6 +79,16 @@ class StubStorage(Storage):
 
     def presigned_get(self, bucket: str, key: str) -> str:
         return f"http://localhost:8080/stub-download/{bucket}/{key}"
+
+    def put_json(self, bucket: str, key: str, doc: dict[str, Any]) -> str:
+        self._objects[(bucket, key)] = json.dumps(doc, ensure_ascii=False)
+        return key
+
+    def get_json(self, bucket: str, key: str) -> dict[str, Any]:
+        try:
+            return json.loads(self._objects[(bucket, key)])
+        except KeyError:
+            raise KeyError(f"no object at {bucket}/{key}") from None
 
 
 class S3Storage(Storage):
@@ -110,6 +130,26 @@ class S3Storage(Storage):
             Params={"Bucket": bucket, "Key": key},
             ExpiresIn=self._settings.presign_expiry_sec,
         )
+
+    def put_json(self, bucket: str, key: str, doc: dict[str, Any]) -> str:
+        self._client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(doc, ensure_ascii=False).encode("utf-8"),
+            ContentType="application/json",
+        )
+        return key
+
+    def get_json(self, bucket: str, key: str) -> dict[str, Any]:
+        from botocore.exceptions import ClientError
+
+        try:
+            resp = self._client.get_object(Bucket=bucket, Key=key)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                raise KeyError(f"no object at {bucket}/{key}") from exc
+            raise
+        return json.loads(resp["Body"].read().decode("utf-8"))
 
 
 @lru_cache(maxsize=1)
