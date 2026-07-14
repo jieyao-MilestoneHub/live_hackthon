@@ -21,6 +21,11 @@ __all__ = [
     "UploadSessionCreate",
     "UploadPart",
     "UploadSession",
+    "Highlight",
+    "HighlightList",
+    "TimelineClip",
+    "Timeline",
+    "ComposeRequest",
 ]
 
 
@@ -86,3 +91,62 @@ class UploadSession(BaseModel):
     key: str
     parts: list[UploadPart] = Field(default_factory=list)
     expires_in_sec: int
+
+
+class Highlight(BaseModel):
+    """A highlights.v1 highlight item (editor candidate)."""
+
+    highlight_id: str
+    start_ms: int
+    end_ms: int
+    score: float
+    reason: str | None = None
+    transcript: str | None = None
+    suggested_title: str | None = None
+    selected: bool | None = None
+    locked: bool | None = None
+
+
+class HighlightList(BaseModel):
+    """GET /projects/{id}/highlights response."""
+
+    project_id: str
+    source_duration_ms: int | None = None
+    highlights: list[Highlight] = Field(default_factory=list)
+
+
+class TimelineClip(BaseModel):
+    timeline_order: int
+    highlight_id: str
+    source_start_ms: int
+    source_end_ms: int
+    timeline_start_ms: int
+    timeline_end_ms: int
+
+
+class Timeline(BaseModel):
+    """timeline.v1 projection — GET response and PUT request body.
+
+    On PUT the server assigns ``version`` / ``created_by`` / ``created_at`` and
+    recomputes ``actual_duration_ms`` from ``clips`` (client values are ignored).
+    """
+
+    schema_version: str | None = None
+    project_id: str | None = None
+    version: int | None = None
+    target_duration_ms: int
+    actual_duration_ms: int | None = None
+    aspect_ratio: str | None = None
+    subtitle_settings: dict | None = None
+    effect_settings: dict | None = None
+    created_by: str | None = None
+    created_at: str | None = None
+    clips: list[TimelineClip] = Field(default_factory=list)
+
+
+class ComposeRequest(BaseModel):
+    """POST /projects/{id}/compose request body (all optional)."""
+
+    target_duration_ms: int | None = Field(default=None, ge=1000, le=60000)
+    locked_highlight_ids: list[str] | None = None
+    excluded_highlight_ids: list[str] | None = None

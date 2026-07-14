@@ -70,3 +70,27 @@ def client(aws):
 
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture()
+def ready_project(client):
+    """A project seeded to READY_TO_EDIT with highlights + timeline v1.
+
+    Runs the analysis + composer workers against the SAME repo singleton the
+    app uses (get_repository() is lru_cached), so HTTP reads see the data.
+    Target 60000ms yields a 2-clip timeline for richer assertions.
+    """
+    from analysis.validate import load_sample
+    from app.repository import get_repository
+    from app.state import ProjectState, assert_project_transition
+    from workers import analysis_worker, composer_worker
+
+    project_id = client.post("/projects", json={"target_duration_ms": 60000}).json()["project_id"]
+    repo = get_repository()
+    for state in (ProjectState.UPLOAD_PENDING, ProjectState.UPLOADING, ProjectState.ANALYZING):
+        current = ProjectState(repo.get_project(project_id)["status"])
+        assert_project_transition(current, state)
+        repo.update_project(project_id, {"status": state.value})
+    analysis_worker.run(repo, project_id, load_sample("transcript.sample.json"))
+    composer_worker.run(repo, project_id)
+    return project_id

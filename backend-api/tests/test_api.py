@@ -78,9 +78,59 @@ def test_unknown_project_404(client) -> None:
 
 
 def test_unimplemented_endpoints_return_501(client) -> None:
-    project_id = client.post("/projects", json={"target_duration_ms": 15000}).json()["project_id"]
-    assert client.get(f"/projects/{project_id}/highlights").status_code == 501
-    assert client.get(f"/projects/{project_id}/timeline").status_code == 501
-    assert client.post(f"/projects/{project_id}/renders", json={}).status_code == 501
+    # highlights/timeline/compose are wired in M2; renders/artifacts stay stubs.
+    assert client.post("/projects/proj/renders", json={}).status_code == 501
     assert client.get("/renders/render-xyz").status_code == 501
     assert client.get("/artifacts/artifact-xyz/download").status_code == 501
+
+
+# --- M2 editor loop -------------------------------------------------------
+
+
+def test_highlights_empty_and_timeline_404_before_analysis(client) -> None:
+    pid = client.post("/projects", json={"target_duration_ms": 30000}).json()["project_id"]
+    hl = client.get(f"/projects/{pid}/highlights")
+    assert hl.status_code == 200
+    assert hl.json()["highlights"] == []
+    assert client.get(f"/projects/{pid}/timeline").status_code == 404
+
+
+def test_compose_without_highlights_409(client) -> None:
+    pid = client.post("/projects", json={"target_duration_ms": 30000}).json()["project_id"]
+    assert client.post(f"/projects/{pid}/compose", json={}).status_code == 409
+
+
+def test_get_highlights(client, ready_project) -> None:
+    r = client.get(f"/projects/{ready_project}/highlights")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["project_id"] == ready_project
+    assert body["source_duration_ms"] == 240000
+    assert len(body["highlights"]) >= 1
+    assert all(h["start_ms"] < h["end_ms"] for h in body["highlights"])
+
+
+def test_get_timeline(client, ready_project) -> None:
+    r = client.get(f"/projects/{ready_project}/timeline")
+    assert r.status_code == 200
+    tl = r.json()
+    assert tl["version"] == 1
+    assert tl["actual_duration_ms"] <= 60000
+    assert len(tl["clips"]) >= 1
+
+
+def test_compose_appends_new_version(client, ready_project) -> None:
+    r = client.post(f"/projects/{ready_project}/compose", json={"target_duration_ms": 20000})
+    assert r.status_code == 202
+    assert r.json()["timeline_version"] == 2
+    # latest is now v2; v1 is still retrievable (append-only).
+    assert client.get(f"/projects/{ready_project}/timeline").json()["version"] == 2
+    assert client.get(f"/projects/{ready_project}/timeline?version=1").json()["version"] == 1
+
+
+def test_put_timeline_appends_new_version(client, ready_project) -> None:
+    current = client.get(f"/projects/{ready_project}/timeline").json()
+    edited = {"target_duration_ms": current["target_duration_ms"], "clips": current["clips"][:1]}
+    r = client.put(f"/projects/{ready_project}/timeline", json=edited)
+    assert r.status_code == 200
+    assert r.json()["timeline_version"] == current["version"] + 1

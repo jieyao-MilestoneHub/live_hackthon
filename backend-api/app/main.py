@@ -11,22 +11,34 @@ Deploy target: container image (ECR) -> AWS App Runner (or Lambda Function URL).
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from jsonschema import ValidationError
 
+from analysis.validate import validate_timeline
 from app.auth import Principal, current_principal
 from app.repository import ProjectRepository, get_repository
 from app.schemas import (
+    ComposeRequest,
+    Highlight,
+    HighlightList,
     Project,
     ProjectCreate,
     ProjectCreated,
+    Timeline,
     UploadSession,
     UploadSessionCreate,
 )
 from app.settings import get_settings
 from app.state import InvalidTransition, ProjectState, assert_project_transition
 from app.storage import Storage, get_storage, resolve_part_count
+from workers import composer_worker
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 VERSION = "0.2.0"
 
@@ -137,24 +149,105 @@ def _not_implemented(what: str) -> HTTPException:
     return HTTPException(status_code=501, detail=f"{what} not implemented yet")
 
 
-@app.get("/projects/{id}/highlights")
-def get_highlights(id: str) -> dict:  # noqa: ARG001
-    raise _not_implemented("highlights (M2 Analysis Worker)")
+@app.get("/projects/{id}/highlights", response_model=HighlightList)
+def get_highlights(
+    id: str,
+    repo: ProjectRepository = Depends(get_repository),
+) -> HighlightList:
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return HighlightList(
+        project_id=id,
+        source_duration_ms=project.get("source_duration_ms"),
+        highlights=[Highlight(**h) for h in repo.list_highlights(id)],
+    )
 
 
-@app.get("/projects/{id}/timeline")
-def get_timeline(id: str) -> dict:  # noqa: ARG001
-    raise _not_implemented("timeline read (M2 Composer)")
+@app.get("/projects/{id}/timeline", response_model=Timeline)
+def get_timeline(
+    id: str,
+    version: int | None = None,
+    repo: ProjectRepository = Depends(get_repository),
+) -> Timeline:
+    if repo.get_project(id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    timeline = repo.get_timeline(id, version)
+    if timeline is None:
+        raise HTTPException(status_code=404, detail="timeline not found")
+    return Timeline(**timeline)
 
 
 @app.put("/projects/{id}/timeline")
-def update_timeline(id: str) -> dict:  # noqa: ARG001
-    raise _not_implemented("timeline update (M2)")
+def update_timeline(
+    id: str,
+    body: Timeline,
+    principal: Principal = Depends(current_principal),
+    repo: ProjectRepository = Depends(get_repository),
+) -> dict:
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    try:
+        assert_project_transition(ProjectState(project["status"]), ProjectState.READY_TO_EDIT)
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    # Server owns version/created_by/created_at; recompute actual from clips.
+    version = int(project.get("latest_timeline_version") or 0) + 1
+    clips = [c.model_dump() for c in body.clips]
+    actual = max((c["timeline_end_ms"] for c in clips), default=0)
+    timeline_doc: dict = {
+        "schema_version": "timeline.v1",
+        "project_id": id,
+        "version": version,
+        "target_duration_ms": body.target_duration_ms,
+        "actual_duration_ms": actual,
+        "clips": clips,
+        "created_by": principal.user_id,
+        "created_at": _now_iso(),
+    }
+    for opt in ("aspect_ratio", "subtitle_settings", "effect_settings"):
+        val = getattr(body, opt)
+        if val is not None:
+            timeline_doc[opt] = val
+
+    try:
+        validate_timeline(timeline_doc)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid timeline: {exc.message}")
+
+    repo.put_timeline(id, timeline_doc)  # append-only new version
+    repo.update_project(
+        id, {"latest_timeline_version": version, "status": ProjectState.READY_TO_EDIT.value}
+    )
+    return {"timeline_version": version}
 
 
-@app.post("/projects/{id}/compose")
-def compose_timeline(id: str) -> dict:  # noqa: ARG001
-    raise _not_implemented("compose (M2 Composer Worker)")
+@app.post("/projects/{id}/compose", status_code=202)
+def compose_project_timeline(
+    id: str,
+    body: ComposeRequest | None = None,
+    repo: ProjectRepository = Depends(get_repository),
+) -> dict:
+    # MVP shim: run the light (no-FFmpeg) Composer inline. TODO(async): enqueue to
+    # the ai-task queue so a Lambda runs composer_worker.run off the request path.
+    if repo.get_project(id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    req = body or ComposeRequest()
+    try:
+        timeline = composer_worker.run(
+            repo,
+            id,
+            target=req.target_duration_ms,
+            locked=req.locked_highlight_ids,
+            excluded=req.excluded_highlight_ids,
+        )
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"timeline_version": timeline["version"]}
 
 
 @app.post("/projects/{id}/renders")
