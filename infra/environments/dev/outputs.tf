@@ -14,10 +14,10 @@ output "cloudfront_distribution_id" {
   value       = module.frontend.distribution_id
 }
 
-# --- Backend (ECR + App Runner) ---
-output "apprunner_service_url" {
-  description = "Public URL of the backend App Runner service."
-  value       = module.backend.service_url
+# --- Backend (ECR + Lambda behind API Gateway HTTP API) ---
+output "backend_api_endpoint" {
+  description = "Public base URL of the backend (API Gateway → Lambda)."
+  value       = module.backend_lambda.api_endpoint
 }
 
 output "ecr_repository_url" {

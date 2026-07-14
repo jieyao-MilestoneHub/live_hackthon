@@ -1,0 +1,19 @@
+# Lambda container image for the FastAPI backend via Mangum.
+# App Runner was blocked by the workshop SCP; this deploys the same app as a
+# Lambda behind a Function URL instead.
+#
+# Build from the repo ROOT so it can COPY both backend-api/ and contracts/:
+#   docker build -f backend-api/Dockerfile.lambda -t <ecr-url>:lambda .
+FROM public.ecr.aws/lambda/python:3.11
+
+# contracts/ is copied into the task root; point the resilient loader at it.
+ENV CONTRACTS_DIR=/var/task/contracts
+
+COPY backend-api/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend-api/ ${LAMBDA_TASK_ROOT}/
+COPY contracts/ ${LAMBDA_TASK_ROOT}/contracts/
+
+# app/lambda_handler.py exposes `handler = Mangum(app)`
+CMD ["app.lambda_handler.handler"]

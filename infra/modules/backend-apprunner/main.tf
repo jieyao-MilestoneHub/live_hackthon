@@ -68,54 +68,10 @@ resource "aws_iam_role" "apprunner_instance" {
   tags               = var.tags
 }
 
-resource "aws_apprunner_auto_scaling_configuration_version" "backend" {
-  auto_scaling_configuration_name = var.name
-  max_concurrency                 = 100
-  max_size                        = 2
-  min_size                        = 1
-  tags                            = var.tags
-}
-
-resource "aws_apprunner_service" "backend" {
-  service_name = var.name
-
-  source_configuration {
-    # Auto deployments require private ECR; disable for the public placeholder.
-    auto_deployments_enabled = local.is_public_image ? false : true
-
-    image_repository {
-      image_identifier      = var.backend_image
-      image_repository_type = local.image_repository_type
-
-      image_configuration {
-        port = tostring(var.container_port)
-      }
-    }
-
-    dynamic "authentication_configuration" {
-      for_each = local.is_public_image ? [] : [1]
-      content {
-        access_role_arn = aws_iam_role.apprunner_ecr_access.arn
-      }
-    }
-  }
-
-  instance_configuration {
-    cpu               = var.cpu
-    memory            = var.memory
-    instance_role_arn = aws_iam_role.apprunner_instance.arn
-  }
-
-  health_check_configuration {
-    protocol            = "HTTP"
-    path                = var.health_check_path
-    interval            = 10
-    timeout             = 5
-    healthy_threshold   = 1
-    unhealthy_threshold = 5
-  }
-
-  auto_scaling_configuration_arn = aws_apprunner_auto_scaling_configuration_version.backend.arn
-
-  tags = merge(var.tags, { Purpose = "backend-service" })
-}
+# NOTE: aws_apprunner_service is intentionally REMOVED — the WSParticipantRole
+# SCP denies apprunner:CreateService (and CreateAutoScalingConfiguration) in this
+# workshop account. The backend is deployed as a Lambda + Function URL instead
+# (see modules/backend-lambda). This module now only manages the ECR repo (which
+# holds both the :latest App Runner image and the :lambda image) plus the two
+# App Runner IAM roles (kept, unused, harmless — reinstate the service if this
+# repo ever runs in an account without the SCP).

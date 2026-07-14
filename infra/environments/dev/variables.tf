@@ -18,10 +18,16 @@ variable "env" {
 
 variable "backend_image" {
   type = string
-  # Placeholder public image so `terraform validate` and the first `apply`
-  # succeed before the real backend image is built & pushed to ECR.
-  # deploy.sh overrides this with the private ECR image URI (step 3):
-  #   terraform apply -var backend_image=<ecr-url>:latest
+  # Placeholder public image; the App Runner service that consumed this is
+  # removed (SCP-blocked), but the ECR repo module still accepts the var.
   default     = "public.ecr.aws/docker/library/nginx:latest"
-  description = "Container image URI for the App Runner backend service."
+  description = "Container image URI (legacy App Runner var; unused at runtime)."
+}
+
+variable "backend_lambda_image" {
+  type = string
+  # Placeholder so validate/plan work before the :lambda image is pushed.
+  # deploy overrides with the real ECR image: -var backend_lambda_image=<ecr>:lambda
+  default     = "public.ecr.aws/lambda/python:3.11"
+  description = "ECR image URI for the backend Lambda container."
 }

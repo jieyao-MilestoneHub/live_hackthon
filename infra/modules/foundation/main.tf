@@ -1,13 +1,18 @@
 # Foundation: raw/work/output S3 buckets + VideoJobs DynamoDB single table.
 # Mirrors docs/aws-infra.md §5 (S3 key schema / lifecycle) and §6 (DynamoDB).
 
+# Account id suffix keeps the globally-unique S3 bucket names from colliding
+# with other accounts (the project prefix alone is not guaranteed unique).
+data "aws_caller_identity" "current" {}
+
 locals {
-  # Logical buckets per §5. Prefixed with the project name for global
-  # uniqueness (S3 bucket names are global) while keeping the video-* schema.
+  # Logical buckets per §5. Prefixed with the project name + account id for
+  # global uniqueness (S3 bucket names are global) while keeping video-* schema.
+  suffix = data.aws_caller_identity.current.account_id
   buckets = {
-    raw    = "${var.project}-video-raw-${var.env}"
-    work   = "${var.project}-video-work-${var.env}"
-    output = "${var.project}-video-output-${var.env}"
+    raw    = "${var.project}-video-raw-${var.env}-${local.suffix}"
+    work   = "${var.project}-video-work-${var.env}-${local.suffix}"
+    output = "${var.project}-video-output-${var.env}-${local.suffix}"
   }
 
   # §5 lifecycle stubs — minimal, tune per data-governance needs.
