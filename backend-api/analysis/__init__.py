@@ -1,4 +1,23 @@
-"""高光分析模組：transcript.v1 → highlights.v1（規則式，LLM 可選）。"""
-from .highlights import detect_highlights, DEFAULT_PARAMS
+"""高光分析模組。
 
-__all__ = ["detect_highlights", "DEFAULT_PARAMS"]
+- 規則式偵測:transcript.v1 → highlights.v1（``detect_highlights``,LLM 可選)。
+- 分析邊界 seam:「梗包」偵測(``BitDetector`` Protocol + ``StubBitDetector`` +
+  ``get_bit_detector`` factory)+ adapter ``bits_to_highlights`` → highlights.v1。
+  真 detector 由工程師之後 drop-in（只換 factory 綁定)。
+"""
+from .bits import (
+    BitDetector,
+    StubBitDetector,
+    bits_to_highlights,
+    get_bit_detector,
+)
+from .highlights import DEFAULT_PARAMS, detect_highlights
+
+__all__ = [
+    "detect_highlights",
+    "DEFAULT_PARAMS",
+    "BitDetector",
+    "StubBitDetector",
+    "get_bit_detector",
+    "bits_to_highlights",
+]
