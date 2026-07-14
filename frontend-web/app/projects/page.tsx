@@ -4,7 +4,9 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
+  analyzeProject,
   composeTimeline,
+  createChatUpload,
   createRender,
   createUploadSession,
   getDownloadUrl,
@@ -12,7 +14,9 @@ import {
   getProject,
   getRender,
   getTimeline,
+  setVideoTimebase,
   updateTimeline,
+  uploadChatCsv,
   uploadToS3,
 } from '@/lib/api';
 import { formatMs, msToSecondsLabel, projectPhase } from '@/lib/format';
@@ -22,6 +26,7 @@ import {
   RENDER_TERMINAL_STATES,
 } from '@/types';
 import type {
+  AnalysisSource,
   AspectRatio,
   ComposeRequest,
   Highlight,
@@ -92,17 +97,44 @@ function buildTimelineBody(
   return { body, actualMs: cursor };
 }
 
+/** Read an MP4's duration (ms) client-side via a hidden <video>; undefined on failure. */
+function readVideoDurationMs(file: File): Promise<number | undefined> {
+  return new Promise((resolve) => {
+    try {
+      const url = URL.createObjectURL(file);
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.onloadedmetadata = () => {
+        URL.revokeObjectURL(url);
+        resolve(Number.isFinite(v.duration) && v.duration > 0 ? Math.round(v.duration * 1000) : undefined);
+      };
+      v.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(undefined);
+      };
+      v.src = url;
+    } catch {
+      resolve(undefined);
+    }
+  });
+}
+
 // --- Upload region -------------------------------------------------------
 function UploadRegion({
   projectId,
+  analysisSource,
   onUploaded,
 }: {
   projectId: string;
+  analysisSource: AnalysisSource;
   onUploaded: () => void;
 }) {
+  const isChat = analysisSource === 'chat';
   const [file, setFile] = useState<File | null>(null);
+  const [logFile, setLogFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [pct, setPct] = useState(0);
+  const [step, setStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function handleUpload() {
@@ -110,10 +142,15 @@ function UploadRegion({
       setError('請先選擇一個影片檔案。');
       return;
     }
+    if (isChat && !logFile) {
+      setError('聊天室 LOG 分析需同時選擇一個 LOG CSV 檔案。');
+      return;
+    }
     setError(null);
     setUploading(true);
     setPct(0);
     try {
+      setStep('上傳影片…');
       const session = await createUploadSession(projectId, {
         filename: file.name,
         content_type: file.type || 'video/mp4',
@@ -121,24 +158,48 @@ function UploadRegion({
         part_count: 1,
       });
       // uploadToS3 PUTs each part, collects ETags, then POSTs the multipart
-      // -complete handshake — which materializes source.mp4 and triggers analysis.
+      // -complete handshake — which materializes source.mp4. For a chat project
+      // the Starter skips auto-Transcribe (the analysis_source="chat" gate), so
+      // we drive analysis explicitly below. For a transcribe project this is all.
       await uploadToS3(projectId, session, file, setPct);
+
+      if (isChat && logFile) {
+        // 1) upload the chat-room LOG CSV via a presigned single-part PUT
+        setStep('上傳聊天室 LOG…');
+        const chatSession = await createChatUpload(projectId);
+        await uploadChatCsv(chatSession, logFile);
+        // 2) link the video timebase (duration keeps chat cuts in-range)
+        const durationMs = await readVideoDurationMs(file);
+        if (durationMs) {
+          await setVideoTimebase(projectId, { source_duration_ms: durationMs });
+        }
+        // 3) chat analysis (→ COMPOSING), then compose (→ READY_TO_EDIT)
+        setStep('分析彈幕熱度…');
+        await analyzeProject(projectId, durationMs ? { source_duration_ms: durationMs } : {});
+        setStep('組出初始剪輯…');
+        await composeTimeline(projectId, {});
+      }
       onUploaded();
     } catch (err) {
       console.error(err);
-      setError('上傳失敗，請重試。');
+      setError('上傳或分析失敗，請重試。');
       setUploading(false);
+      setStep(null);
     }
   }
+
+  const uploadDisabled = uploading || !file || (isChat && !logFile);
 
   return (
     <div className="panel">
       <div className="panel__head">
-        <span className="panel__title cjk">上傳原始影片</span>
+        <span className="panel__title cjk">{isChat ? '上傳影片與聊天室 LOG' : '上傳原始影片'}</span>
         <span className="panel__eyebrow">UPLOAD</span>
       </div>
       <p className="hint" style={{ marginTop: 0 }}>
-        瀏覽器將以 presigned URL 直接上傳至 S3 Raw bucket，完成後自動觸發高光分析。
+        {isChat
+          ? '影片以 presigned URL 直傳 S3；聊天室 LOG CSV 供分析彈幕熱度峰值，完成後自動組出初始剪輯。'
+          : '瀏覽器將以 presigned URL 直接上傳至 S3 Raw bucket，完成後自動觸發高光分析。'}
       </p>
 
       <label className="dropzone" htmlFor="video" style={{ marginTop: 14 }}>
@@ -166,18 +227,47 @@ function UploadRegion({
         )}
       </label>
 
+      {isChat && (
+        <label className="dropzone" htmlFor="chatlog" style={{ marginTop: 12 }}>
+          <input
+            id="chatlog"
+            type="file"
+            accept=".csv,text/csv"
+            disabled={uploading}
+            onChange={(e) => {
+              setLogFile(e.target.files?.[0] ?? null);
+              setError(null);
+            }}
+          />
+          {logFile ? (
+            <span>
+              <span className="mono" style={{ color: 'var(--text)' }}>
+                {logFile.name}
+              </span>
+              {logFile.size > 0 && (
+                <span className="mono muted"> · {(logFile.size / (1024 * 1024)).toFixed(1)} MB</span>
+              )}
+            </span>
+          ) : (
+            <span>拖曳或點選聊天室 LOG（.csv）</span>
+          )}
+        </label>
+      )}
+
       {uploading && (
         <>
           <div className="bar" aria-label="upload progress">
             <span style={{ width: `${pct}%` }} />
           </div>
-          <p className="hint mono">上傳中… {pct}%</p>
+          <p className="hint mono">
+            {step ?? '處理中…'} {pct > 0 && pct < 100 ? `${pct}%` : ''}
+          </p>
         </>
       )}
 
       <div style={{ marginTop: 16 }}>
-        <button className="btn" onClick={handleUpload} disabled={uploading || !file}>
-          {uploading ? '上傳中…' : '開始上傳 ▸'}
+        <button className="btn" onClick={handleUpload} disabled={uploadDisabled}>
+          {uploading ? '處理中…' : isChat ? '上傳並分析 ▸' : '開始上傳 ▸'}
         </button>
       </div>
       {error && <p className="error">{error}</p>}
@@ -763,6 +853,7 @@ function ProjectView() {
         <div style={{ marginTop: 20 }}>
           <UploadRegion
             projectId={projectId}
+            analysisSource={project.analysis_source ?? 'transcribe'}
             onUploaded={() => setProject((p) => (p ? { ...p, status: 'UPLOADING' } : p))}
           />
         </div>

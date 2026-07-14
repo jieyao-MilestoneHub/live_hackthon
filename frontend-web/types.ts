@@ -1,4 +1,4 @@
-// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.2.0).
+// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.4.0).
 // Project / millisecond model (M1). Source of truth: ../contracts/openapi.yaml
 // and ../contracts/*.v1.schema.json — keep in sync when the contract changes.
 // All times are integers in milliseconds (ms). Core entity is Project (not job).
@@ -31,11 +31,20 @@ export type RenderState =
 /** Output aspect ratio (openapi: Timeline.aspect_ratio / Artifact.aspect_ratio). */
 export type AspectRatio = '16:9' | '9:16' | '1:1';
 
+/** Highlight analysis source (openapi: ProjectCreate.analysis_source). */
+export type AnalysisSource = 'transcribe' | 'chat';
+
 /** Request body for POST /projects (openapi: ProjectCreate). */
 export interface ProjectCreate {
   title?: string;
   /** Final clip length in ms. 1000–60000 (≤ 60s). */
   target_duration_ms: number;
+  /**
+   * Highlight source. 'transcribe' (default): video-audio Transcribe pipeline
+   * auto-runs after upload. 'chat': highlights come from the uploaded chat LOG
+   * via POST /analyze; the Starter skips auto-Transcribe.
+   */
+  analysis_source?: AnalysisSource;
 }
 
 /** Response of POST /projects (openapi: ProjectCreated). */
@@ -53,6 +62,7 @@ export interface Project {
   status: ProjectState;
   title?: string;
   target_duration_ms: number;
+  analysis_source?: AnalysisSource;
   source_duration_ms?: number;
   source_key?: string;
   /** 影片 0:00 對應的 epoch 毫秒（來自 MP4 OBS creation_time）；chat epoch ↔ 影片相對毫秒 換算基準。 */

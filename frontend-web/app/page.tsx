@@ -20,6 +20,7 @@ export default function LandingPage() {
   const router = useRouter();
   const [title, setTitle] = useState('');
   const [targetSec, setTargetSec] = useState(DEFAULT_TARGET_SEC);
+  const [analysisSource, setAnalysisSource] = useState<'transcribe' | 'chat'>('transcribe');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,6 +38,7 @@ export default function LandingPage() {
       const created = await createProject({
         title: title.trim() || undefined,
         target_duration_ms: Math.round(targetSec * 1000),
+        analysis_source: analysisSource,
       });
       router.push(`/projects?id=${encodeURIComponent(created.project_id)}`);
     } catch (err) {
@@ -91,6 +93,35 @@ export default function LandingPage() {
                 maxLength={80}
                 onChange={(e) => setTitle(e.target.value)}
               />
+            </div>
+
+            <div className="field">
+              <label>分析來源</label>
+              <div className="row" style={{ display: 'flex', gap: 8 }}>
+                <button
+                  type="button"
+                  className={`btn btn--sm ${analysisSource === 'transcribe' ? '' : 'btn--ghost'}`}
+                  onClick={() => setAnalysisSource('transcribe')}
+                  style={{ flex: 1 }}
+                  aria-pressed={analysisSource === 'transcribe'}
+                >
+                  影片語音 · Transcribe
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn--sm ${analysisSource === 'chat' ? '' : 'btn--ghost'}`}
+                  onClick={() => setAnalysisSource('chat')}
+                  style={{ flex: 1 }}
+                  aria-pressed={analysisSource === 'chat'}
+                >
+                  聊天室 LOG · 彈幕熱度
+                </button>
+              </div>
+              <p className="hint">
+                {analysisSource === 'chat'
+                  ? '需同時上傳影片與聊天室 LOG CSV；高光取自彈幕熱度峰值。'
+                  : '上傳影片後自動轉逐字稿，偵測語音情緒高峰。'}
+              </p>
             </div>
 
             <div className="field">
