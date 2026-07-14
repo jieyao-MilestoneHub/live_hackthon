@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars (gitignored) and adjust as needed.
+# All values have sensible defaults in variables.tf; override only what you need.
+
+region  = "us-east-1"
+project = "lang-live"
+env     = "dev"
+
+# Container image for App Runner.
+# Leave the placeholder for `validate` / the first `apply`. deploy.sh overrides
+# this with the real private ECR image once it is built & pushed:
+#   backend_image = "<account-id>.dkr.ecr.us-east-1.amazonaws.com/lang-live-backend-dev:latest"
+backend_image = "public.ecr.aws/docker/library/nginx:latest"
