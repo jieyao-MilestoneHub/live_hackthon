@@ -10,12 +10,16 @@ import {
   getTimeline,
   uploadToS3,
 } from '@/lib/api';
-import { badgeClass, formatMs, msToSecondsLabel, projectPhase } from '@/lib/format';
+import { formatMs, msToSecondsLabel, projectPhase } from '@/lib/format';
 import { EDITABLE_STATES } from '@/types';
 import type { AspectRatio, Highlight, Project, Timeline } from '@/types';
+import StatusPill from '@/components/StatusPill';
+import StageRail from '@/components/StageRail';
+import ScoreMeter from '@/components/ScoreMeter';
+import HighlightWave from '@/components/HighlightWave';
 
 const POLL_INTERVAL_MS = 2000;
-const PREVIEW_HEIGHT = 300;
+const PREVIEW_HEIGHT = 260;
 
 const ASPECTS: AspectRatio[] = ['16:9', '9:16', '1:1'];
 const ASPECT_CSS: Record<AspectRatio, string> = {
@@ -24,7 +28,6 @@ const ASPECT_CSS: Record<AspectRatio, string> = {
   '1:1': '1 / 1',
 };
 
-/** Server-side processing states that warrant polling (excludes await-upload). */
 function isPollable(status: Project['status']): boolean {
   return status === 'UPLOADING' || status === 'ANALYZING' || status === 'COMPOSING';
 }
@@ -67,41 +70,52 @@ function UploadRegion({
   }
 
   return (
-    <div className="card">
-      <h2>上傳原始影片</h2>
+    <div className="panel">
+      <div className="panel__head">
+        <span className="panel__title cjk">上傳原始影片</span>
+        <span className="panel__eyebrow">UPLOAD</span>
+      </div>
       <p className="hint" style={{ marginTop: 0 }}>
         瀏覽器將以 presigned URL 直接上傳至 S3 Raw bucket，完成後自動觸發高光分析。
       </p>
-      <label htmlFor="video">影片檔案（mp4 等）</label>
-      <input
-        id="video"
-        type="file"
-        accept="video/*"
-        disabled={uploading}
-        onChange={(e) => {
-          setFile(e.target.files?.[0] ?? null);
-          setError(null);
-        }}
-      />
-      {file && (
-        <p className="hint">
-          已選擇：<span className="mono">{file.name}</span>
-          {file.size > 0 && <> · {(file.size / (1024 * 1024)).toFixed(1)} MB</>}
-        </p>
-      )}
+
+      <label className="dropzone" htmlFor="video" style={{ marginTop: 14 }}>
+        <input
+          id="video"
+          type="file"
+          accept="video/*"
+          disabled={uploading}
+          onChange={(e) => {
+            setFile(e.target.files?.[0] ?? null);
+            setError(null);
+          }}
+        />
+        {file ? (
+          <span>
+            <span className="mono" style={{ color: 'var(--text)' }}>
+              {file.name}
+            </span>
+            {file.size > 0 && (
+              <span className="mono muted"> · {(file.size / (1024 * 1024)).toFixed(1)} MB</span>
+            )}
+          </span>
+        ) : (
+          <span>拖曳或點選影片檔案（mp4 等）</span>
+        )}
+      </label>
 
       {uploading && (
         <>
-          <div className="progress" aria-label="upload progress">
+          <div className="bar" aria-label="upload progress">
             <span style={{ width: `${pct}%` }} />
           </div>
-          <p className="hint">上傳中… {pct}%</p>
+          <p className="hint mono">上傳中… {pct}%</p>
         </>
       )}
 
-      <div className="row spacer">
-        <button onClick={handleUpload} disabled={uploading || !file}>
-          {uploading ? '上傳中…' : '開始上傳'}
+      <div style={{ marginTop: 16 }}>
+        <button className="btn" onClick={handleUpload} disabled={uploading || !file}>
+          {uploading ? '上傳中…' : '開始上傳 ▸'}
         </button>
       </div>
       {error && <p className="error">{error}</p>}
@@ -146,22 +160,40 @@ function EditorRegions({
   return (
     <div className="editor">
       {/* Region 1: Video Preview */}
-      <section className="card region-preview">
-        <div className="region-head">
-          <h2>Video Preview</h2>
-          <span className="mono muted">{aspect}</span>
-        </div>
-        <div className="preview-wrap">
-          <div
-            className="preview-frame"
-            style={{ aspectRatio: ASPECT_CSS[aspect], height: PREVIEW_HEIGHT }}
-          >
-            <span className="preview-note">預覽（骨架）· {aspect}</span>
+      <section className="panel col-span">
+        <div className="panel__head">
+          <span className="panel__title">Video Preview</span>
+          <div className="seg">
+            {ASPECTS.map((a) => (
+              <button
+                key={a}
+                className={`seg__btn${aspect === a ? ' is-active' : ''}`}
+                onClick={() => setAspect(a)}
+              >
+                {a}
+              </button>
+            ))}
           </div>
         </div>
+        <div className="preview">
+          <div
+            className="preview__frame"
+            style={{ aspectRatio: ASPECT_CSS[aspect], height: PREVIEW_HEIGHT }}
+          >
+            <span className="preview__note">PREVIEW · {aspect}</span>
+          </div>
+        </div>
+        <div
+          style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 10 }}
+        >
+          <input type="range" min={0} max={100} defaultValue={18} disabled style={{ flex: 1 }} />
+          <span className="mono muted" style={{ fontSize: 12 }}>
+            0:12.480
+          </span>
+        </div>
         <p className="hint">
-          目標長度 <span className="mono">{msToSecondsLabel(project.target_duration_ms)}</span>
-          （<span className="mono">{project.target_duration_ms}</span> ms）
+          目標 <span className="mono">{msToSecondsLabel(project.target_duration_ms)}</span> ·{' '}
+          <span className="mono">{project.target_duration_ms}</span> ms
           {typeof project.source_duration_ms === 'number' && (
             <>
               {' '}· 原始長度 <span className="mono">{formatMs(project.source_duration_ms)}</span>
@@ -171,70 +203,78 @@ function EditorRegions({
       </section>
 
       {/* Region 2: Highlight Candidates */}
-      <section className="card region-highlights">
-        <h2>Highlight Candidates（{highlights.length}）</h2>
+      <section className="panel">
+        <div className="panel__head">
+          <span className="panel__title cjk">高光候選</span>
+          <span className="panel__eyebrow">HIGHLIGHTS · {highlights.length}</span>
+        </div>
         {highlights.length === 0 ? (
           <p className="hint">尚無高光候選。</p>
         ) : (
           highlights.map((h) => (
-            <div className="hl" key={h.highlight_id}>
-              <label className="hl-row">
+            <div className="hlx" key={h.highlight_id}>
+              <label className="hlx__row">
                 <input
                   type="checkbox"
                   checked={selected.has(h.highlight_id)}
                   onChange={() => setSelected((s) => toggle(s, h.highlight_id))}
                 />
-                <span className="hl-title">{h.suggested_title || h.highlight_id}</span>
-                <span className="clip-score">{Math.round((h.score ?? 0) * 100)}</span>
+                <span className="hlx__title cjk">{h.suggested_title || h.highlight_id}</span>
+                <ScoreMeter score={h.score ?? 0} />
               </label>
-              <div className="clip-meta">
-                <span className="mono">{h.highlight_id}</span> ·{' '}
-                <span className="mono">
-                  {formatMs(h.start_ms)}–{formatMs(h.end_ms)}
-                </span>{' '}
-                （<span className="mono">{h.start_ms}</span>–
-                <span className="mono">{h.end_ms}</span> ms）
+              <div className="hlx__meta mono">
+                {h.highlight_id} · {formatMs(h.start_ms)}–{formatMs(h.end_ms)}（{h.start_ms}–
+                {h.end_ms} ms）
               </div>
-              {h.reason && <p className="clip-reason">{h.reason}</p>}
-              <button
-                className="secondary sm"
-                onClick={() => setLocked((s) => toggle(s, h.highlight_id))}
-              >
-                {locked.has(h.highlight_id) ? '🔒 已鎖定' : '🔓 鎖定'}
-              </button>
+              {h.reason && <p className="hlx__reason">{h.reason}</p>}
+              <div className="hlx__foot">
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={() => setLocked((s) => toggle(s, h.highlight_id))}
+                >
+                  {locked.has(h.highlight_id) ? '🔒 已鎖定' : '🔓 鎖定'}
+                </button>
+                <span className="mono muted" style={{ fontSize: 12 }}>
+                  {selected.has(h.highlight_id) ? '已選入' : '未選入'}
+                </span>
+              </div>
             </div>
           ))
         )}
       </section>
 
       {/* Region 3: Project Settings */}
-      <section className="card region-settings">
-        <h2>Project Settings</h2>
+      <section className="panel">
+        <div className="panel__head">
+          <span className="panel__title cjk">專案設定</span>
+          <span className="panel__eyebrow">SETTINGS</span>
+        </div>
 
         <div className="setting">
-          <span className="setting-label">Target</span>
+          <span className="setting__label">Target</span>
           <span className="mono">
             {msToSecondsLabel(project.target_duration_ms)} · {project.target_duration_ms} ms
           </span>
         </div>
 
         <div className="setting">
-          <span className="setting-label">Subtitle</span>
+          <span className="setting__label">Subtitle</span>
           <button
-            className={`toggle ${subtitleOn ? 'on' : ''}`}
+            className={`switch${subtitleOn ? ' is-on' : ''}`}
+            role="switch"
+            aria-checked={subtitleOn}
+            aria-label="字幕自動生成"
             onClick={() => setSubtitleOn((v) => !v)}
-          >
-            {subtitleOn ? 'Auto（開）' : '關閉'}
-          </button>
+          />
         </div>
 
         <div className="setting">
-          <span className="setting-label">Effect</span>
+          <span className="setting__label">Effect</span>
           <div className="seg">
             {(['low', 'medium', 'high'] as const).map((lv) => (
               <button
                 key={lv}
-                className={`seg-btn ${effectIntensity === lv ? 'active' : ''}`}
+                className={`seg__btn${effectIntensity === lv ? ' is-active' : ''}`}
                 onClick={() => setEffectIntensity(lv)}
               >
                 {lv}
@@ -244,59 +284,57 @@ function EditorRegions({
         </div>
 
         <div className="setting">
-          <span className="setting-label">Aspect</span>
-          <div className="seg">
-            {ASPECTS.map((a) => (
-              <button
-                key={a}
-                className={`seg-btn ${aspect === a ? 'active' : ''}`}
-                onClick={() => setAspect(a)}
-              >
-                {a}
-              </button>
-            ))}
-          </div>
+          <span className="setting__label">Aspect</span>
+          <span className="mono">{aspect}</span>
         </div>
       </section>
 
       {/* Region 4: Timeline */}
-      <section className="card region-timeline">
-        <div className="region-head">
-          <h2>Timeline</h2>
-          <span className="mono muted">
+      <section className="panel col-span">
+        <div className="panel__head">
+          <span className="panel__title">Timeline</span>
+          <span className="panel__eyebrow mono">
             v{timeline.version} · {formatMs(timeline.actual_duration_ms)} /{' '}
             {formatMs(timeline.target_duration_ms)}
           </span>
         </div>
         <div className="track">
-          {clips.map((c) => (
-            <div
-              key={c.timeline_order}
-              className="track-clip"
-              style={{ flexBasis: `${((c.timeline_end_ms - c.timeline_start_ms) / total) * 100}%` }}
-              title={`${c.highlight_id} · ${c.timeline_start_ms}–${c.timeline_end_ms} ms`}
-            >
-              <span className="track-order">#{c.timeline_order}</span>
-              <span className="track-id mono">{c.highlight_id}</span>
-              <span className="track-time mono">
-                {formatMs(c.timeline_start_ms)}–{formatMs(c.timeline_end_ms)}
-              </span>
-            </div>
-          ))}
+          <div className="track__ruler">
+            <span>0:00.000</span>
+            <span>{formatMs(Math.round(timeline.target_duration_ms / 2))}</span>
+            <span>{formatMs(timeline.target_duration_ms)}</span>
+          </div>
+          <div className="track__lane">
+            {clips.map((c) => (
+              <div
+                key={c.timeline_order}
+                className="track__clip"
+                style={{
+                  flexBasis: `${((c.timeline_end_ms - c.timeline_start_ms) / total) * 100}%`,
+                }}
+                title={`${c.highlight_id} · ${c.timeline_start_ms}–${c.timeline_end_ms} ms`}
+              >
+                <span className="track__order">#{c.timeline_order}</span>
+                <span className="track__id">{c.highlight_id}</span>
+                <span className="track__time">
+                  {formatMs(c.timeline_start_ms)}–{formatMs(c.timeline_end_ms)}
+                </span>
+              </div>
+            ))}
+          </div>
+          <span className="playhead" style={{ left: '38%' }} />
         </div>
-        <p className="hint">
-          拖曳排序／刪除／鎖定與重新組片為 M2／M3 功能，此處先呈現骨架排版。
-        </p>
+        <p className="hint">拖曳排序／刪除／鎖定與重新組片為 M2／M3 功能，此處先呈現骨架。</p>
       </section>
 
-      {/* Action bar */}
-      <div className="card region-actions">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <button className="secondary" disabled title="M3：儲存為新 Timeline 版本">
+      {/* Actions */}
+      <div className="panel col-span">
+        <div className="actions">
+          <button className="btn btn--ghost" disabled title="M3：儲存為新 Timeline 版本">
             Save Draft
           </button>
-          <button disabled title="M4：提交 Render">
-            Render Video
+          <button className="btn" disabled title="M4：提交 Render">
+            Render Video ▸
           </button>
         </div>
       </div>
@@ -315,7 +353,6 @@ function ProjectView() {
     null,
   );
 
-  // Initial + manual refresh fetch.
   useEffect(() => {
     if (!projectId) return;
     let active = true;
@@ -330,7 +367,6 @@ function ProjectView() {
     };
   }, [projectId]);
 
-  // Poll while the backend is processing.
   useEffect(() => {
     if (!projectId || !project || !isPollable(project.status)) return;
     const t = setTimeout(async () => {
@@ -343,7 +379,6 @@ function ProjectView() {
     return () => clearTimeout(t);
   }, [projectId, project]);
 
-  // Load highlights + timeline once the project is editable.
   useEffect(() => {
     if (!projectId || !project || !EDITABLE_STATES.has(project.status) || editor) return;
     let active = true;
@@ -359,92 +394,112 @@ function ProjectView() {
 
   if (!projectId) {
     return (
-      <div className="card">
-        <h1>找不到專案 ID</h1>
-        <p className="hint">
-          網址缺少 <span className="mono">?id=</span> 參數。
-        </p>
-        <div className="spacer">
-          <Link href="/">← 建立新專案</Link>
+      <main className="shell page">
+        <div className="panel">
+          <h1 className="cjk" style={{ fontSize: 24 }}>
+            找不到專案 ID
+          </h1>
+          <p className="hint">
+            網址缺少 <span className="mono">?id=</span> 參數。
+          </p>
+          <div style={{ marginTop: 16 }}>
+            <Link href="/" className="btn btn--ghost btn--sm">
+              ← 建立新專案
+            </Link>
+          </div>
         </div>
-      </div>
+      </main>
     );
   }
 
   const phase = project ? projectPhase(project.status) : null;
 
   return (
-    <main>
-      <div className="card">
-        <div className="region-head">
-          <h1 style={{ margin: 0 }}>{project?.title || '影片專案'}</h1>
-          {project && <span className={badgeClass(project.status)}>{project.status}</span>}
+    <main className="shell page">
+      {/* Project header */}
+      <div className="panel">
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+            gap: 16,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div>
+            <div className="mono muted" style={{ fontSize: 11, letterSpacing: '0.12em' }}>
+              PROJECT · {projectId}
+            </div>
+            <h1 className="cjk" style={{ fontSize: 26, marginTop: 6 }}>
+              {project?.title || '影片專案'}
+            </h1>
+            {phase && <p className="hint cjk" style={{ marginTop: 4 }}>{phase.label}</p>}
+          </div>
+          {project && <StatusPill status={project.status} />}
         </div>
-        <p className="clip-meta">
-          Project ID：<span className="mono">{projectId}</span>
-        </p>
+        {project && <StageRail status={project.status} />}
         {!project && !error && <p className="hint">載入中…</p>}
         {error && <p className="error">{error}</p>}
-        {project && phase && (
-          <p className="hint" style={{ marginTop: 4 }}>
-            狀態：{phase.label}
-          </p>
-        )}
         {project?.status === 'FAILED' && (
           <p className="error">
-            失敗：{project.error_code} {project.error_message}
+            分析失敗，請重新上傳影片。{project.error_code} {project.error_message}
           </p>
         )}
       </div>
 
       {project && phase?.awaitingUpload && (
-        <UploadRegion
-          projectId={projectId}
-          onUploaded={() =>
-            setProject((p) => (p ? { ...p, status: 'UPLOADING' } : p))
-          }
-        />
-      )}
-
-      {project && phase?.busy && !phase.canEdit && (
-        <div className="card">
-          <h2>{phase.label}</h2>
-          <div className="progress indeterminate" aria-label="processing">
-            <span />
-          </div>
-          <p className="hint">處理中，每 {POLL_INTERVAL_MS / 1000} 秒自動更新狀態…</p>
+        <div style={{ marginTop: 20 }}>
+          <UploadRegion
+            projectId={projectId}
+            onUploaded={() => setProject((p) => (p ? { ...p, status: 'UPLOADING' } : p))}
+          />
         </div>
       )}
 
-      {project && phase?.canEdit && (
-        editor ? (
+      {project && phase?.busy && !phase.canEdit && (
+        <div className="panel" style={{ marginTop: 20 }}>
+          <div className="panel__head">
+            <span className="panel__title cjk">{phase.label}</span>
+            <span className="panel__eyebrow">PROCESSING</span>
+          </div>
+          <HighlightWave mode="scan" height={120} />
+          <p className="hint mono">處理中 · 每 {POLL_INTERVAL_MS / 1000}s 自動更新狀態…</p>
+        </div>
+      )}
+
+      {project &&
+        phase?.canEdit &&
+        (editor ? (
           <EditorRegions
             project={project}
             highlights={editor.highlights}
             timeline={editor.timeline}
           />
         ) : (
-          <div className="card">
+          <div className="panel" style={{ marginTop: 20 }}>
             <p className="hint">載入編輯器資料中…</p>
           </div>
-        )
-      )}
+        ))}
 
-      <div className="spacer">
-        <Link href="/">← 建立另一個專案</Link>
+      <div style={{ marginTop: 24 }}>
+        <Link href="/" className="mono muted" style={{ fontSize: 13 }}>
+          ← 建立另一個專案
+        </Link>
       </div>
     </main>
   );
 }
 
 export default function ProjectsPage() {
-  // useSearchParams requires a Suspense boundary under static export.
   return (
     <Suspense
       fallback={
-        <div className="card">
-          <p className="hint">載入中…</p>
-        </div>
+        <main className="shell page">
+          <div className="panel">
+            <p className="hint">載入中…</p>
+          </div>
+        </main>
       }
     >
       <ProjectView />
