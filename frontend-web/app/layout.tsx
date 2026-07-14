@@ -18,15 +18,17 @@ export default function RootLayout({
     <html lang="zh-TW" className={fontVars}>
       <body>
         <header className="topbar">
-          <Link href="/" aria-label="浪 LIVE 首頁" style={{ textDecoration: 'none' }}>
-            <Brand />
-          </Link>
-          <nav className="topbar__nav">
-            <span className="mono">直播高光剪輯</span>
-            <Link href="/" className="btn btn--ghost btn--sm">
-              進入編輯
+          <div className="topbar__inner">
+            <Link href="/" aria-label="浪 LIVE 首頁" style={{ textDecoration: 'none' }}>
+              <Brand />
             </Link>
-          </nav>
+            <nav className="topbar__nav">
+              <span className="mono">直播高光剪輯</span>
+              <Link href="/" className="btn btn--ghost btn--sm">
+                進入編輯
+              </Link>
+            </nav>
+          </div>
         </header>
 
         {children}

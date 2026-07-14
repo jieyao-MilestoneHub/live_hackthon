@@ -47,6 +47,9 @@
   --sp-5: 36px;
   --sp-6: 56px;
   --sp-7: 88px;
+  --shell-max: 1080px;
+  /* preview height that always keeps a 16:9 frame within the viewport width */
+  --preview-h: min(300px, calc((100vw - 96px) / 1.78));
   --r-sm: 8px;
   --r-md: 12px;
   --r-lg: 18px;
@@ -120,7 +123,7 @@ a:hover {
 
 /* ---------- Layout ---------- */
 .shell {
-  max-width: 1080px;
+  max-width: var(--shell-max);
   margin: 0 auto;
   padding: 0 24px;
 }
@@ -129,14 +132,19 @@ a:hover {
   position: sticky;
   top: 0;
   z-index: 50;
+  padding: 0;
+  background: rgba(8, 12, 26, 0.62);
+  backdrop-filter: blur(14px) saturate(140%);
+  border-bottom: 1px solid var(--line-soft);
+}
+.topbar__inner {
+  max-width: var(--shell-max);
+  margin: 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   padding: 14px 24px;
-  background: rgba(8, 12, 26, 0.62);
-  backdrop-filter: blur(14px) saturate(140%);
-  border-bottom: 1px solid var(--line-soft);
 }
 
 .topbar__nav {
@@ -822,9 +830,9 @@ input[type="checkbox"] {
   padding: 48px 0 8px;
 }
 .hero__title {
-  font-size: clamp(40px, 7vw, 84px);
+  font-size: clamp(2rem, 8.5vw, 5.25rem);
   font-weight: 800;
-  line-height: 1.04;
+  line-height: 1.05;
   letter-spacing: -0.02em;
   margin: 18px 0 20px;
 }
@@ -902,19 +910,24 @@ input[type="checkbox"] {
 }
 
 /* ---------- Responsive ---------- */
-@media (max-width: 820px) {
+/* Tablet: collapse the two-column zones to a single column */
+@media (max-width: 860px) {
   .hero__grid {
     grid-template-columns: minmax(0, 1fr);
+    gap: 22px;
+    margin-top: 30px;
   }
   .editor {
     grid-template-columns: minmax(0, 1fr);
   }
 }
-@media (max-width: 560px) {
+
+/* Large phone / small tablet */
+@media (max-width: 640px) {
   .shell {
     padding: 0 16px;
   }
-  .topbar {
+  .topbar__inner {
     padding: 12px 16px;
   }
   .topbar__nav {
@@ -923,8 +936,21 @@ input[type="checkbox"] {
   .topbar__nav .mono {
     display: none;
   }
-  .hero__title {
-    font-size: clamp(34px, 10vw, 46px);
+  .page {
+    padding: 26px 0 72px;
+  }
+  .hero {
+    padding: 30px 0 4px;
+  }
+  .hero__grid {
+    gap: 16px;
+    margin-top: 24px;
+  }
+  .panel {
+    padding: 18px;
+  }
+  .editor {
+    gap: 16px;
   }
   .rail {
     gap: 2px;
@@ -932,6 +958,23 @@ input[type="checkbox"] {
   .rail__line {
     width: 12px;
     margin: 0 4px;
+  }
+  .footer .shell {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+/* Small phone */
+@media (max-width: 380px) {
+  body {
+    font-size: 15px;
+  }
+  .brand--lg {
+    font-size: 21px;
+  }
+  .track__clip {
+    min-width: 76px;
   }
 }
 

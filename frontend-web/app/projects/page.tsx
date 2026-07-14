@@ -19,7 +19,6 @@ import ScoreMeter from '@/components/ScoreMeter';
 import HighlightWave from '@/components/HighlightWave';
 
 const POLL_INTERVAL_MS = 2000;
-const PREVIEW_HEIGHT = 260;
 
 const ASPECTS: AspectRatio[] = ['16:9', '9:16', '1:1'];
 const ASPECT_CSS: Record<AspectRatio, string> = {
@@ -178,7 +177,7 @@ function EditorRegions({
         <div className="preview">
           <div
             className="preview__frame"
-            style={{ aspectRatio: ASPECT_CSS[aspect], height: PREVIEW_HEIGHT }}
+            style={{ aspectRatio: ASPECT_CSS[aspect], height: 'var(--preview-h)' }}
           >
             <span className="preview__note">PREVIEW · {aspect}</span>
           </div>
