@@ -25,7 +25,7 @@
 |---|---|---|
 | 前端 `frontend-web/` | Next.js 靜態匯出 | S3 + CloudFront |
 | 後端 `backend-api/` | FastAPI + 分析模組 | ECR → App Runner |
-| Infra `infra/` | Terraform（ap-northeast-1） | AWS dev/staging/prod |
+| Infra `infra/` | Terraform（us-east-1） | AWS dev/staging/prod |
 | 契約 `contracts/` | JSON Schema + OpenAPI | 跨組共用 |
 
 ## 3. 介面契約（真相來源＝ `contracts/`）

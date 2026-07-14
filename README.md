@@ -8,7 +8,7 @@
 |---|---|---|
 | 前端 `frontend-web/` | Next.js（靜態匯出） | S3 + CloudFront |
 | 後端 `backend-api/` | FastAPI（含分析模組） | ECR → App Runner |
-| Infra `infra/` | Terraform | ap-northeast-1（東京） |
+| Infra `infra/` | Terraform | us-east-1（維吉尼亞） |
 
 ## Repo 佈局
 
