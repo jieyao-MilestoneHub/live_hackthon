@@ -52,3 +52,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# === Data / production logs (NEVER commit prod data to this public repo) ===
+*_log.csv
+3654414_log.csv
