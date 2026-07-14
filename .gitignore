@@ -31,6 +31,7 @@ override.tf
 override.tf.json
 tfplan
 tfplan*
+*.tfplan
 
 # === Secrets / credentials (NEVER commit) ===
 *.pem
