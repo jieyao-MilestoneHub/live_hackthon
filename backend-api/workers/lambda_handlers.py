@@ -239,6 +239,19 @@ def starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         if not parsed:
             continue
         tenant_id, project_id = parsed
+        # analysis_source gate: chat-LOG projects produce highlights via the
+        # synchronous POST /analyze (chat volume), NOT this auto video→Transcribe
+        # path. Skipping StartExecution prevents the Transcribe run from clobbering
+        # chat highlights or flipping the project to FAILED on the
+        # ANALYZING→COMPOSING transition assert. Video-only projects
+        # (analysis_source="transcribe", the default) proceed as before.
+        project = get_repository().get_project(project_id)
+        if project and project.get("analysis_source") == "chat":
+            log.info(
+                "starter: project %s analysis_source=chat; skipping auto Transcribe StartExecution",
+                project_id,
+            )
+            continue
         if not version_id:
             # Raw bucket versioning should always supply version-id; without it
             # the execution name falls back to '{project_id}-v0', so a later
