@@ -1,0 +1,104 @@
+# 附加 OpenAPI 片段 — Speaker Attribution（加法端點）
+# 待併入 contracts/openapi.yaml：把下列 paths / components.schemas 併入，
+# 並將 info.version 0.2.0 → 0.3.0（加法端點、非破壞）。單獨成檔以避免與其他 session 的 openapi.yaml 編輯衝突。
+openapi: 3.0.3
+info:
+  title: 浪 LIVE Editor API — Speaker Attribution 附加
+  version: 0.3.0
+paths:
+  /projects/{id}/people:
+    post:
+      summary: 註冊人物（方案A：參考照片 → Rekognition Collection）
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PersonCreate" }
+      responses:
+        "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/Person" } } } }
+    get:
+      summary: 人物名冊
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Person" } } } } }
+  /projects/{id}/attribution:
+    post:
+      summary: 產生具名逐字稿（跑 pipeline 並落地）
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                media_uri: { type: string, nullable: true }
+                use_asd: { type: boolean, default: true }
+      responses:
+        "201": { description: created, content: { application/json: { schema: { $ref: "https://live-hackthon/contracts/attributed_transcript.v1.schema.json" } } } }
+  /projects/{id}/transcript:
+    get:
+      summary: 讀取具名逐字稿
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: ok, content: { application/json: { schema: { $ref: "https://live-hackthon/contracts/attributed_transcript.v1.schema.json" } } } }
+        "404": { description: 尚未產生 }
+  /projects/{id}/speakers/{cluster_id}:
+    patch:
+      summary: 把整個 diarization 群組標成某人物（傳播到所有句）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: cluster_id, in: path, required: true, schema: { type: string, example: spk_0 } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SpeakerLabelUpdate" } } }
+      responses:
+        "200": { description: ok }
+  /projects/{id}/utterances/{utterance_id}:
+    patch:
+      summary: 單句更正人物
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: utterance_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/UtteranceCorrection" } } }
+      responses:
+        "200": { description: ok }
+        "404": { description: 找不到句子或逐字稿 }
+components:
+  schemas:
+    Role:
+      type: string
+      enum: [protagonist, host, guest, unknown]
+    PersonCreate:
+      type: object
+      required: [display_name]
+      properties:
+        display_name: { type: string, example: 主播 A }
+        role: { $ref: "#/components/schemas/Role" }
+        reference_image_keys:
+          type: array
+          items: { type: string }
+          description: raw bucket 內的參考照片 key（3–10 張）
+    Person:
+      type: object
+      properties:
+        person_id: { type: string }
+        display_name: { type: string }
+        role: { $ref: "#/components/schemas/Role" }
+        identity_source: { type: string, enum: [rekognition_collection, user_label, inferred] }
+        rekognition_collection_id: { type: string, nullable: true }
+        rekognition_external_id: { type: string, nullable: true }
+        reference_image_keys: { type: array, items: { type: string } }
+        enrolled_at: { type: string, nullable: true }
+        indexed_faces: { type: integer, nullable: true }
+    SpeakerLabelUpdate:
+      type: object
+      required: [person_id]
+      properties:
+        person_id: { type: string }
+    UtteranceCorrection:
+      type: object
+      properties:
+        person_id: { type: string, nullable: true, description: "null → 標回未知" }

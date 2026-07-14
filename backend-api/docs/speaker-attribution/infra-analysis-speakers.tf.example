@@ -1,0 +1,122 @@
+# =============================================================================
+# infra/modules/analysis-speakers/  — 交接範例（勿直接放進他人正在改的 main.tf）
+# 由 infra owner 於 feat/infra 穩定後新增此模組並在 environments/dev/main.tf 串接。
+# 依「AWS 服務查證結論」：Transcribe / Rekognition / Bedrock Nova 的最小權限。
+# 動工前對每個新服務先跑 SCP create→delete probe（帳號已知會擋部分服務）。
+# =============================================================================
+
+variable "project"      { type = string } # lang-live
+variable "env"          { type = string } # dev
+variable "raw_bucket"   { type = string }
+variable "work_bucket"  { type = string }
+variable "table_name"   { type = string } # VideoEditor-dev
+variable "account_id"   { type = string }
+
+locals {
+  name = "${var.project}-attribution-${var.env}"
+  # us. 跨區 profile 可路由到的目的區（Bedrock 政策需全列）
+  bedrock_regions = ["us-east-1", "us-east-2", "us-west-2"]
+}
+
+# ---- Pipeline / worker 執行角色（附到 backend Lambda exec role 或新 worker role）----
+data "aws_iam_policy_document" "attribution" {
+  statement {
+    sid     = "Transcribe"
+    actions = ["transcribe:StartTranscriptionJob", "transcribe:GetTranscriptionJob"]
+    resources = ["*"] # Transcribe 不支援 resource-level，用條件/標籤另行約束
+  }
+  statement {
+    sid = "Rekognition"
+    actions = [
+      "rekognition:CreateCollection", "rekognition:DeleteCollection",
+      "rekognition:IndexFaces", "rekognition:StartFaceSearch",
+      "rekognition:GetFaceSearch", "rekognition:StartFaceDetection",
+      "rekognition:GetFaceDetection",
+    ]
+    resources = ["*"]
+  }
+  statement {
+    sid       = "S3ReadRawWriteWork"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = [
+      "arn:aws:s3:::${var.raw_bucket}/*",
+      "arn:aws:s3:::${var.work_bucket}/*", # 含 Transcribe OutputBucket 的 PutObject
+    ]
+  }
+  statement {
+    sid       = "DynamoDB"
+    actions   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:BatchWriteItem"]
+    resources = ["arn:aws:dynamodb:*:${var.account_id}:table/${var.table_name}"]
+  }
+  # Bedrock：用 us. inference profile 時，須同時列 profile ARN + 各目的區 foundation-model ARN
+  statement {
+    sid     = "BedrockInvoke"
+    actions = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+    resources = concat(
+      ["arn:aws:bedrock:us-east-1:${var.account_id}:inference-profile/us.amazon.nova-2-lite-v1:0"],
+      [for r in local.bedrock_regions : "arn:aws:bedrock:${r}::foundation-model/amazon.nova-2-lite-v1:0"],
+      ["arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0"],
+      ["arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-premier-v1:0"],
+    )
+  }
+}
+
+resource "aws_iam_policy" "attribution" {
+  name   = "${local.name}-policy"
+  policy = data.aws_iam_policy_document.attribution.json
+}
+
+# ---- Rekognition 服務角色（StartFaceSearch.NotificationChannel.RoleArn）----
+data "aws_iam_policy_document" "rekognition_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["rekognition.amazonaws.com"]
+    }
+    condition { # confused-deputy 防護
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+  }
+}
+
+resource "aws_iam_role" "rekognition_service" {
+  name               = "${local.name}-rekognition-service"
+  assume_role_policy = data.aws_iam_policy_document.rekognition_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "rekognition_service" {
+  role       = aws_iam_role.rekognition_service.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonRekognitionServiceRole"
+}
+
+# SNS topic 名稱「必須」以 AmazonRekognition 開頭（配上面受管政策）
+resource "aws_sns_topic" "rekognition" {
+  name = "AmazonRekognition-${var.project}-${var.env}-face-search"
+}
+
+resource "aws_sqs_queue" "rekognition" {
+  name = "${local.name}-rekognition-completion"
+}
+
+resource "aws_sns_topic_subscription" "rekognition" {
+  topic_arn = aws_sns_topic.rekognition.arn
+  protocol  = "sqs"
+  endpoint  = aws_sqs_queue.rekognition.arn
+}
+
+# ---- Transcribe 完成事件（EventBridge → parser Lambda/SQS）----
+resource "aws_cloudwatch_event_rule" "transcribe_done" {
+  name = "${local.name}-transcribe-done"
+  event_pattern = jsonencode({
+    source        = ["aws.transcribe"]
+    "detail-type" = ["Transcribe Job State Change"]
+    detail        = { TranscriptionJobStatus = ["COMPLETED", "FAILED"] }
+  })
+}
+
+output "attribution_policy_arn"      { value = aws_iam_policy.attribution.arn }
+output "rekognition_service_role_arn" { value = aws_iam_role.rekognition_service.arn }
+output "rekognition_sns_topic_arn"   { value = aws_sns_topic.rekognition.arn }

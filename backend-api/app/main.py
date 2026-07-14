@@ -291,3 +291,12 @@ def get_artifact_download_url(
     settings = get_settings()
     url = storage.presigned_get(settings.output_bucket, artifact["video_key"])
     return DownloadUrl(url=url, expires_in_sec=settings.presign_expiry_sec)
+
+
+# --- Speaker Attribution feature (mounted) ---------------------------------
+# 具名說話者逐字稿端點：POST/GET /projects/{id}/people、POST /projects/{id}/attribution、
+# GET /projects/{id}/transcript、PATCH /projects/{id}/speakers|utterances/...
+# router 與模型自成一檔（app/attribution_api.py），此處僅一行掛載。
+from app.attribution_api import router as attribution_router  # noqa: E402
+
+app.include_router(attribution_router)
