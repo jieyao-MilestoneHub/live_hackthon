@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: 浪 LIVE Editor API
-  version: 0.3.0
+  version: 0.4.0
   description: >
     影片高光剪輯「編輯器控制面」API（前後端共用契約）。M1 Project/毫秒版：
     核心實體為 Project、時間一律毫秒（ms）、雙 pipeline（分析組片 + 渲染）。
@@ -442,6 +442,13 @@ components:
           maximum: 60000
           example: 30000
           description: 最終短片長度（毫秒），上限 60000（60 秒）
+        analysis_source:
+          type: string
+          enum: [transcribe, chat]
+          default: transcribe
+          description: >
+            高光分析來源。transcribe（預設）：影片上傳後 S3 事件自動走 Transcribe→highlights；
+            chat：改由聊天室 LOG（POST /analyze）產生高光，Starter 略過自動 Transcribe。
 
     ProjectCreated:
       type: object
@@ -462,6 +469,10 @@ components:
         status: { $ref: "#/components/schemas/ProjectState" }
         title: { type: string }
         target_duration_ms: { type: integer }
+        analysis_source:
+          type: string
+          enum: [transcribe, chat]
+          description: 高光分析來源（transcribe 預設 / chat 聊天室 LOG）
         source_duration_ms: { type: integer, description: 原始影片長度（毫秒），上傳分析後才有 }
         source_key: { type: string }
         video_start_epoch_ms:
