@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/asd_result.v1.schema.json",
+  "title": "asd_result.v1",
+  "description": "Active Speaker Detection Worker 輸出：某時間區間內畫面中『當下正在說話』的臉部 track 與其嘴型同步信心。作為 Fusion Worker 的一等視聽對齊證據。MVP 以 Rekognition landmarks 啟發式產生，未來可換 Batch/SageMaker 深度模型。時間一律毫秒（ms）。",
+  "type": "object",
+  "required": ["schema_version", "project_id", "segments"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "asd_result.v1" },
+    "project_id": { "type": "string" },
+    "model_version": {
+      "type": ["string", "null"],
+      "description": "ASD 模型版本，如 asd-heuristic-1.0.0 或 asd-talknet-1.0.0"
+    },
+    "segments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/segment" }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "segment": {
+      "type": "object",
+      "required": ["start_ms", "end_ms", "speaker_cluster_id", "lip_sync_confidence", "visible_ratio"],
+      "additionalProperties": false,
+      "properties": {
+        "start_ms": { "type": "integer", "minimum": 0 },
+        "end_ms": { "type": "integer", "minimum": 0 },
+        "speaker_cluster_id": {
+          "type": "string",
+          "description": "對應 Transcribe diarization 群組，如 spk_0"
+        },
+        "active_face_track_id": {
+          "type": ["string", "null"],
+          "description": "判定為當下發言者的臉部 track（由 FaceDetection box 與 FaceSearch Person.BoundingBox 以 IoU 對齊）"
+        },
+        "person_id": {
+          "type": ["string", "null"],
+          "description": "若該 track 已對應到具名人物則帶入（來自 FaceSearch ExternalImageId）"
+        },
+        "lip_sync_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "嘴型開合與音訊發聲時間一致程度"
+        },
+        "visible_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "該區間臉部持續可見比例"
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

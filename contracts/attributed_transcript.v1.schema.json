@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/attributed_transcript.v1.schema.json",
+  "title": "attributed_transcript.v1",
+  "description": "具名說話者逐字稿（Speaker-attributed Transcript）。Fusion Worker 融合 Transcribe diarization + Rekognition face-search + Active Speaker Detection（+ Nova 語意複核）後的產物：每段 utterance 帶時間、匿名聲音群組 speaker_cluster_id、具名 person_id/role、辨識方法與可信度。時間一律毫秒（ms）。additive 契約，transcript.v1 保持不動。",
+  "type": "object",
+  "required": ["schema_version", "project_id", "language_code", "participants", "utterances"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "attributed_transcript.v1" },
+    "project_id": { "type": "string" },
+    "language_code": { "type": "string", "description": "BCP-47，如 zh-TW" },
+    "source_transcript_version": {
+      "type": ["string", "null"],
+      "description": "衍生自哪一份 transcript.v1（work bucket version_id 或摘要），供溯源"
+    },
+    "attribution_version": {
+      "type": ["string", "null"],
+      "description": "Fusion 引擎版本，如 attribution-fusion-1.0.0"
+    },
+    "participants": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/participant" }
+    },
+    "utterances": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/utterance" }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "participant": {
+      "type": "object",
+      "required": ["person_id", "display_name", "role", "identity_source"],
+      "additionalProperties": false,
+      "properties": {
+        "person_id": { "type": "string" },
+        "display_name": { "type": "string" },
+        "role": {
+          "type": "string",
+          "enum": ["protagonist", "host", "guest", "unknown"]
+        },
+        "identity_source": {
+          "type": "string",
+          "enum": ["rekognition_collection", "user_label", "inferred"]
+        }
+      }
+    },
+    "utterance": {
+      "type": "object",
+      "required": ["utterance_id", "start_ms", "end_ms", "text", "speaker_cluster_id", "attribution"],
+      "additionalProperties": false,
+      "properties": {
+        "utterance_id": { "type": "string" },
+        "start_ms": { "type": "integer", "minimum": 0 },
+        "end_ms": { "type": "integer", "minimum": 0 },
+        "text": { "type": "string" },
+        "speaker_cluster_id": {
+          "type": "string",
+          "description": "Transcribe diarization 的匿名群組，如 spk_0（僅單支影片內有效）"
+        },
+        "person_id": {
+          "type": ["string", "null"],
+          "description": "融合後的具名人物；未達門檻或無證據時為 null（不硬猜）"
+        },
+        "display_name": { "type": ["string", "null"] },
+        "role": {
+          "type": ["string", "null"],
+          "enum": ["protagonist", "host", "guest", "unknown", null]
+        },
+        "source_segment_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "對應 transcript.v1 的 segment_id（溯源）"
+        },
+        "attribution": { "$ref": "#/$defs/attribution" },
+        "corrected_by": {
+          "type": ["string", "null"],
+          "description": "user id（若被人工更正）"
+        },
+        "corrected_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "attribution": {
+      "type": "object",
+      "required": ["status", "method", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["confirmed", "needs_review", "unknown", "overlapping_speech", "off_screen"]
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "face_search_and_lip_sync",
+            "face_search",
+            "speaker_cluster_propagation",
+            "nova_review",
+            "user_label",
+            "insufficient_evidence"
+          ]
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "face_track_id": { "type": ["string", "null"] },
+        "face_similarity": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "lip_sync_confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "visible_ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "speaker_cluster_consistency": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "自由格式證據明細（各訊號原始分數、Nova 意見等）"
+        }
+      }
+    }
+  }
+}
