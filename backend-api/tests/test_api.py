@@ -1,63 +1,86 @@
-"""API smoke tests for the FastAPI walking skeleton."""
+"""API round-trip tests for the Editor API (Project/millisecond, M1).
+
+Uses the moto-backed ``client`` fixture (conftest.py), exercising the real
+DynamoDB ``VideoEditor`` + S3 multipart code paths.
+"""
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
 
-from app.main import app
-
-
-@pytest.fixture(scope="module")
-def client() -> TestClient:
-    return TestClient(app)
-
-
-def test_health(client: TestClient) -> None:
+def test_health(client) -> None:
     resp = client.get("/health")
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
-    assert "version" in body
+    assert body["version"] == "0.2.0"
 
 
-def test_create_job_returns_succeeded_with_clips(client: TestClient) -> None:
-    resp = client.post("/jobs", json={"filename": "stream.mp4"})
+def test_create_project_roundtrip(client) -> None:
+    resp = client.post("/projects", json={"title": "測試", "target_duration_ms": 30000})
     assert resp.status_code == 201
     body = resp.json()
-    assert body["job_id"]
-    assert body["status"] == "SUCCEEDED"
-    assert "upload" in body
+    project_id = body["project_id"]
+    assert project_id.startswith("project-")
+    assert body["status"] == "CREATED"
+    assert body["target_duration_ms"] == 30000
+    assert project_id in body["source_key"]
+    assert body["source_key"].endswith("source/source.mp4")
 
-    # The created job is retrievable and matches, with at least one clip.
-    job_id = body["job_id"]
-    got = client.get(f"/jobs/{job_id}")
+    # Round-trip GET.
+    got = client.get(f"/projects/{project_id}")
     assert got.status_code == 200
-    got_body = got.json()
-    assert got_body["job_id"] == job_id
-    assert got_body["status"] == "SUCCEEDED"
-    assert len(got_body["highlights"]) >= 1
-    clip = got_body["highlights"][0]
-    assert clip["clip_id"]
-    assert clip["start_sec"] < clip["end_sec"]
+    gb = got.json()
+    assert gb["project_id"] == project_id
+    assert gb["status"] == "CREATED"
+    assert gb["target_duration_ms"] == 30000
 
 
-def test_get_unknown_job_returns_404(client: TestClient) -> None:
-    resp = client.get("/jobs/does-not-exist")
-    assert resp.status_code == 404
+def test_target_duration_validation(client) -> None:
+    # Over the 60s ceiling -> 422.
+    assert client.post("/projects", json={"target_duration_ms": 60001}).status_code == 422
+    # Missing required field -> 422.
+    assert client.post("/projects", json={"title": "x"}).status_code == 422
 
 
-def test_download_url_stub(client: TestClient) -> None:
-    created = client.post("/jobs", json={"filename": "stream.mp4"}).json()
-    job_id = created["job_id"]
-    clip_id = client.get(f"/jobs/{job_id}").json()["highlights"][0]["clip_id"]
+def test_upload_session_presigns_parts_and_advances_state(client) -> None:
+    project_id = client.post("/projects", json={"target_duration_ms": 15000}).json()["project_id"]
 
-    resp = client.get(f"/jobs/{job_id}/artifacts/{clip_id}/download")
-    assert resp.status_code == 200
+    resp = client.post(
+        f"/projects/{project_id}/upload-session",
+        json={"filename": "source.mp4", "content_type": "video/mp4", "part_count": 3},
+    )
+    assert resp.status_code == 201
     body = resp.json()
-    assert body["url"]
+    assert body["upload_id"]
+    assert body["bucket"] == "video-editor-raw-test"
+    assert body["key"].endswith("source/source.mp4")
+    assert len(body["parts"]) == 3
+    assert [p["part_number"] for p in body["parts"]] == [1, 2, 3]
+    assert all(p["url"].startswith("http") for p in body["parts"])
     assert body["expires_in_sec"] == 900
 
-    # Unknown clip -> 404
-    assert client.get(f"/jobs/{job_id}/artifacts/nope/download").status_code == 404
-    # Unknown job -> 404
-    assert client.get("/jobs/nope/artifacts/x/download").status_code == 404
+    # State advanced CREATED -> UPLOAD_PENDING.
+    assert client.get(f"/projects/{project_id}").json()["status"] == "UPLOAD_PENDING"
+
+
+def test_upload_session_default_single_part(client) -> None:
+    project_id = client.post("/projects", json={"target_duration_ms": 15000}).json()["project_id"]
+    resp = client.post(f"/projects/{project_id}/upload-session", json={"filename": "a.mp4"})
+    assert resp.status_code == 201
+    assert len(resp.json()["parts"]) == 1
+
+
+def test_unknown_project_404(client) -> None:
+    assert client.get("/projects/does-not-exist").status_code == 404
+    assert (
+        client.post("/projects/does-not-exist/upload-session", json={"filename": "a.mp4"}).status_code
+        == 404
+    )
+
+
+def test_unimplemented_endpoints_return_501(client) -> None:
+    project_id = client.post("/projects", json={"target_duration_ms": 15000}).json()["project_id"]
+    assert client.get(f"/projects/{project_id}/highlights").status_code == 501
+    assert client.get(f"/projects/{project_id}/timeline").status_code == 501
+    assert client.post(f"/projects/{project_id}/renders", json={}).status_code == 501
+    assert client.get("/renders/render-xyz").status_code == 501
+    assert client.get("/artifacts/artifact-xyz/download").status_code == 501
