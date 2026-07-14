@@ -104,6 +104,71 @@ paths:
               schema: { $ref: "#/components/schemas/Project" }
         "404": { description: 不存在 }
 
+  /projects/{id}/chat-upload:
+    post:
+      summary: 產生聊天室 log CSV 的 presigned 單段上傳授權（聊天優先分析輸入）
+      description: >
+        回傳 chat.csv 的 presigned PUT URL；瀏覽器直接對 S3 Raw bucket 上傳（不經過
+        API 資料面）。之後呼叫 /analyze 觸發分析。
+      operationId: createChatUpload
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "201":
+          description: 已產生上傳授權
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatUploadUrl" }
+        "404": { description: project 不存在 }
+
+  /projects/{id}/analyze:
+    post:
+      summary: 觸發聊天優先高光分析（chat.csv → chatlog.v1 → highlights.v1）
+      description: >
+        MVP inline shim：讀 Raw bucket 的 chat.csv，清理/洗版標記→chatlog.v1（寫 Work
+        bucket），把 Project 推進 ANALYZING，跑規則式熱區+情緒偵測 → highlights.v1，
+        狀態 → COMPOSING。之後可移入 ai-task lane（Step Functions），演算法不變。
+      operationId: analyzeProject
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AnalyzeRequest" }
+      responses:
+        "202":
+          description: 已接受（分析完成，回摘要）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnalyzeResult" }
+        "404": { description: project 或 chat.csv 不存在 }
+        "409": { description: 狀態不允許分析 }
+        "422": { description: chat.csv 無法解析出聊天訊息 }
+
+  /projects/{id}/video-timebase:
+    put:
+      summary: 連結影片時基（設定 video_start_epoch_ms；chat epoch ↔ 影片相對毫秒 換算基準）
+      description: >
+        擇一提供 video_start_epoch_ms 或 MP4 OBS creation_time（伺服器換算）。設定後
+        /analyze 產出的 highlights 才是影片相對毫秒（否則走 -chattime fallback）。
+      operationId: setVideoTimebase
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VideoTimebaseRequest" }
+      responses:
+        "200":
+          description: 已更新 Project
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Project" }
+        "404": { description: project 不存在 }
+        "422": { description: creation_time 無法解析或未提供任何欄位 }
+
   /projects/{id}/highlights:
     get:
       summary: 讀取高光候選（highlights.v1 投影）
@@ -118,6 +183,80 @@ paths:
               schema: { $ref: "#/components/schemas/HighlightList" }
         "404": { description: 不存在 }
         "501": { description: 尚未實作（M2 Analysis Worker） }
+
+  /projects/{id}/highlights/{highlight_id}:
+    patch:
+      summary: 逐段校正（聊天落後位移 / 排除開場 / 鎖定 / 選取）
+      description: >
+        correction_offset_ms 把事件窗相對聊天窗平移（往前抓為負），status→shifted；
+        exclude=true → status=excluded、selected=false。僅允許在編輯迴圈（COMPOSING/READY_TO_EDIT）。
+      operationId: patchHighlight
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: highlight_id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HighlightPatch" }
+      responses:
+        "200":
+          description: 已更新（回傳校正後 highlight）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Highlight" }
+        "404": { description: project 或 highlight 不存在 }
+        "409": { description: 狀態不允許編輯 }
+        "422": { description: 校正後不符合 highlights.v1 }
+
+  /projects/{id}/annotations:
+    get:
+      summary: 讀取結構化標註（annotations.v1 投影；5 維度 + 敘事節拍）
+      operationId: getAnnotations
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Annotations" }
+        "404": { description: project 不存在，或尚未產生標註（先 POST） }
+    post:
+      summary: 產生結構化標註（規則式 5 維度 + 敘事節拍 → annotations.v1）
+      description: >
+        由專案 highlights（+work bucket 的 chatlog）產生 annotations.v1 存 work bucket。
+        需已有 highlights（COMPOSING/READY_TO_EDIT）；不改 Project 狀態。
+      operationId: generateAnnotations
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: 已產生
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Annotations" }
+        "404": { description: project 不存在 }
+        "409": { description: 狀態不允許標註，或無 highlights }
+    put:
+      summary: 儲存人工編輯後的結構化標註
+      description: 伺服器蓋 project_id/schema_version、驗證 annotations.v1 後落地 work bucket。
+      operationId: putAnnotations
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Annotations" }
+      responses:
+        "200":
+          description: 已儲存
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Annotations" }
+        "404": { description: project 不存在 }
+        "422": { description: 不符合 annotations.v1 }
 
   /projects/{id}/timeline:
     get:
@@ -301,6 +440,9 @@ components:
         target_duration_ms: { type: integer }
         source_duration_ms: { type: integer, description: 原始影片長度（毫秒），上傳分析後才有 }
         source_key: { type: string }
+        video_start_epoch_ms:
+          type: integer
+          description: 影片 0:00 對應的 epoch 毫秒（來自 MP4 OBS creation_time）；chat epoch ↔ 影片相對毫秒 換算基準
         latest_timeline_version: { type: integer }
         latest_render_id: { type: string }
         latest_artifact_id: { type: string }
@@ -368,17 +510,58 @@ components:
     Highlight:
       type: object
       required: [highlight_id, start_ms, end_ms, score]
-      description: highlights.v1 的 highlight 項投影
+      description: >
+        highlights.v1 的 highlight 項投影。聊天優先分析 additive 欄位（signal / status /
+        chat_window / correction / emotion / detection / description / provenance）皆為 optional，
+        既有 highlight_id/start_ms/end_ms/score 語意不變。
       properties:
         highlight_id: { type: string }
-        start_ms: { type: integer }
+        start_ms: { type: integer, description: 影片相對毫秒（聊天優先流程為修正後事件窗起點） }
         end_ms: { type: integer }
         score: { type: number }
         reason: { type: string }
         transcript: { type: string }
         suggested_title: { type: string }
+        source_segment_ids: { type: array, items: { type: string } }
         selected: { type: boolean }
         locked: { type: boolean }
+        signal: { type: string, enum: [chat_volume, speech_emotion, fusion] }
+        status: { type: string, enum: [candidate, included, excluded, shifted] }
+        excluded_reason: { type: string, nullable: true }
+        description: { type: string, nullable: true, description: 深層脈絡（此橋段具體在幹嘛） }
+        chat_window:
+          type: object
+          description: 原始聊天熱區偵測窗（影片相對毫秒）；start_ms/end_ms 為修正後事件窗
+          properties:
+            start_ms: { type: integer }
+            end_ms: { type: integer }
+        correction:
+          type: object
+          description: 聊天窗 → 事件窗 的人工/AI 修正（chat lag）
+          properties:
+            applied: { type: boolean }
+            offset_ms: { type: integer, description: 往前抓為負（如 -20000）、延後為正 }
+            corrected_by: { type: string, nullable: true }
+            corrected_at: { type: string, format: date-time, nullable: true }
+            note: { type: string, nullable: true }
+        emotion:
+          type: object
+          description: Level-1 情緒分數與分項拆解
+          properties:
+            score: { type: number, minimum: 0, maximum: 1 }
+            breakdown:
+              type: object
+              properties:
+                keyword: { type: number }
+                emoji: { type: number }
+                punctuation: { type: number }
+                volume: { type: number }
+            counts: { type: object, additionalProperties: true }
+        detection:
+          type: object
+          description: chat_volume 偵測數學（mean+1σ 熱區）
+          additionalProperties: true
+        provenance: { type: object, additionalProperties: true, description: 跨層溯源 }
 
     HighlightList:
       type: object
@@ -389,6 +572,120 @@ components:
         highlights:
           type: array
           items: { $ref: "#/components/schemas/Highlight" }
+
+    ChatUploadUrl:
+      type: object
+      required: [bucket, key, url, expires_in_sec]
+      description: chat.csv 的 presigned 單段 PUT 上傳授權
+      properties:
+        bucket: { type: string }
+        key: { type: string }
+        url: { type: string, format: uri }
+        expires_in_sec: { type: integer, example: 900 }
+
+    AnalyzeRequest:
+      type: object
+      description: 觸發聊天優先分析（欄位皆 optional）
+      properties:
+        chat_key: { type: string, description: 覆寫 chat.csv 的 raw-bucket key（預設用 project 慣例路徑） }
+        video_start_epoch_ms:
+          type: integer
+          description: 影片 0:00 的 epoch 毫秒；未連結影片時可省略，退回聊天相對時間模式
+        source_duration_ms: { type: integer, minimum: 0 }
+        params: { type: object, additionalProperties: true, description: 偵測參數覆寫 }
+
+    AnalyzeResult:
+      type: object
+      required: [project_id, status, highlight_count, analysis_version]
+      properties:
+        project_id: { type: string }
+        status: { $ref: "#/components/schemas/ProjectState" }
+        highlight_count: { type: integer }
+        analysis_version: { type: string, example: highlight-chat-1.0.0 }
+        source_duration_ms: { type: integer }
+
+    VideoTimebaseRequest:
+      type: object
+      description: 連結影片時基（擇一提供 epoch 或 creation_time）
+      properties:
+        video_start_epoch_ms: { type: integer, minimum: 0, description: 影片 0:00 的 epoch 毫秒 }
+        creation_time: { type: string, description: MP4 OBS creation_time（ISO-8601，可含奈秒/時區） }
+        source_duration_ms: { type: integer, minimum: 0 }
+
+    HighlightPatch:
+      type: object
+      description: 編輯器逐段校正（欄位皆 optional）
+      properties:
+        correction_offset_ms:
+          type: integer
+          description: 事件窗相對目前窗的位移；往前抓為負（如 -20000）、延後為正。累加進 correction.offset_ms
+        exclude: { type: boolean, description: true=排除此段、false=取消排除 }
+        selected: { type: boolean }
+        locked: { type: boolean }
+        note: { type: string, description: 校正備註 / 排除原因 }
+
+    Annotations:
+      type: object
+      required: [project_id, annotations]
+      description: annotations.v1 投影（5 維度標註 + 敘事節拍，以 highlight_id 關聯）
+      properties:
+        project_id: { type: string }
+        annotation_version: { type: string, nullable: true }
+        annotations:
+          type: array
+          items: { $ref: "#/components/schemas/Annotation" }
+
+    Annotation:
+      type: object
+      required: [highlight_id, dimensions]
+      properties:
+        highlight_id: { type: string }
+        title: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        dimensions:
+          type: array
+          items: { $ref: "#/components/schemas/DimensionSpan" }
+        beats:
+          type: array
+          items: { $ref: "#/components/schemas/Beat" }
+        corrected_by: { type: string, nullable: true }
+        corrected_at: { type: string, format: date-time, nullable: true }
+
+    DimensionSpan:
+      type: object
+      required: [dimension, start_ms, end_ms]
+      properties:
+        dimension:
+          type: string
+          enum: [setup, reaction_start, reaction_turn, punchline, chat_highlights]
+          description: 埋梗=setup / 反應-一開始=reaction_start / 反應-轉折=reaction_turn / 笑點爆點=punchline / 聊天室精彩留言=chat_highlights
+        start_ms: { type: integer, description: 絕對影片相對毫秒 }
+        end_ms: { type: integer }
+        text: { type: string, nullable: true }
+        messages:
+          type: array
+          description: chat_highlights 維度：挑選的聊天室精彩留言
+          items:
+            type: object
+            required: [text]
+            properties:
+              message_id: { type: string, nullable: true }
+              username: { type: string, nullable: true }
+              text: { type: string }
+
+    Beat:
+      type: object
+      required: [order, start_ms, end_ms]
+      properties:
+        order: { type: integer, minimum: 1 }
+        beat:
+          type: string
+          nullable: true
+          enum: [setup, reaction_start, reaction_turn, punchline]
+        line: { type: string, nullable: true, description: 台詞 }
+        start_ms: { type: integer }
+        end_ms: { type: integer }
+        duration_ms: { type: integer, nullable: true }
 
     TimelineClip:
       type: object

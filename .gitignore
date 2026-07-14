@@ -56,3 +56,8 @@ Thumbs.db
 # === Data / production logs (NEVER commit prod data to this public repo) ===
 *_log.csv
 3654414_log.csv
+# Source/test media (multi-GB); keep locally, never in git. Committed test
+# fixtures use *.sample.csv (small, checked in under tests/fixtures/).
+*.mp4
+*.mov
+*.mkv

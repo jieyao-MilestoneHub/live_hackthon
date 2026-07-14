@@ -1,0 +1,36 @@
+{
+  "schema_version": "annotations.v1",
+  "project_id": "project-123",
+  "annotation_version": "annotation-1.0.0",
+  "annotations": [
+    {
+      "highlight_id": "hl-001",
+      "title": "衝了！成功時刻",
+      "description": "成功挑戰時刻：鋪陳緊張（要衝了）→ 動手 → 一次過關（成功了/做到了）→ 情緒爆點（太爽了），聊天室同步刷屏",
+      "dimensions": [
+        { "dimension": "setup", "start_ms": 150000, "end_ms": 158000, "text": "宣告要挑戰，鋪陳緊張" },
+        { "dimension": "reaction_start", "start_ms": 158000, "end_ms": 170000, "text": "開始動手，大家快看" },
+        { "dimension": "reaction_turn", "start_ms": 170000, "end_ms": 180000, "text": "我要衝了啊啊啊（轉折）" },
+        { "dimension": "punchline", "start_ms": 180000, "end_ms": 188000, "text": "成功了！我們做到了！太爽了（爆點）" },
+        {
+          "dimension": "chat_highlights",
+          "start_ms": 180000,
+          "end_ms": 188000,
+          "text": "聊天室同步爆動",
+          "messages": [
+            { "message_id": "m-0006", "username": "viewerE", "text": "成功了！太爽了吧 感謝應援！" }
+          ]
+        }
+      ],
+      "beats": [
+        { "order": 1, "beat": "setup", "line": "就是現在！我要挑戰了", "start_ms": 150000, "end_ms": 158000, "duration_ms": 8000 },
+        { "order": 2, "beat": "reaction_start", "line": "大家快看，這個超級厲害", "start_ms": 158000, "end_ms": 170000, "duration_ms": 12000 },
+        { "order": 3, "beat": "reaction_turn", "line": "我要衝了啊啊啊！", "start_ms": 170000, "end_ms": 180000, "duration_ms": 10000 },
+        { "order": 4, "beat": "punchline", "line": "成功了！我們做到了！太爽了吧！", "start_ms": 180000, "end_ms": 188000, "duration_ms": 8000 }
+      ],
+      "corrected_by": "editor-1",
+      "corrected_at": "2026-07-14T10:05:10Z"
+    }
+  ],
+  "created_at": "2026-07-14T10:05:30Z"
+}

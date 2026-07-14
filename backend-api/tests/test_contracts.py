@@ -12,7 +12,9 @@ from jsonschema import Draft202012Validator
 from analysis.validate import (
     contracts_dir,
     load_sample,
+    validate_annotations,
     validate_artifact,
+    validate_chatlog,
     validate_effects,
     validate_highlights,
     validate_render_spec,
@@ -22,8 +24,10 @@ from analysis.validate import (
 )
 
 SCHEMAS = [
+    "chatlog.v1",
     "transcript.v1",
     "highlights.v1",
+    "annotations.v1",
     "timeline.v1",
     "subtitle.v1",
     "effects.v1",
@@ -33,8 +37,10 @@ SCHEMAS = [
 
 # (sample filename, validator) — the sample must validate against its schema.
 SAMPLE_CASES = [
+    ("chatlog.sample.json", validate_chatlog),
     ("transcript.sample.json", validate_transcript),
     ("highlights.sample.json", validate_highlights),
+    ("annotations.sample.json", validate_annotations),
     ("timeline.sample.json", validate_timeline),
     ("subtitle.sample.json", validate_subtitle),
     ("effects.sample.json", validate_effects),

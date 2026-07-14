@@ -24,8 +24,17 @@ __all__ = [
     "UploadPartETag",
     "UploadCompleteRequest",
     "UploadCompleted",
+    "ChatUploadUrl",
+    "AnalyzeRequest",
+    "AnalyzeResult",
+    "VideoTimebaseRequest",
+    "HighlightPatch",
     "Highlight",
     "HighlightList",
+    "Beat",
+    "DimensionSpan",
+    "Annotation",
+    "Annotations",
     "TimelineClip",
     "Timeline",
     "ComposeRequest",
@@ -68,6 +77,10 @@ class Project(BaseModel):
     target_duration_ms: int
     source_duration_ms: int | None = None
     source_key: str | None = None
+    video_start_epoch_ms: int | None = Field(
+        default=None,
+        description="影片 0:00 對應的 epoch 毫秒（來自 MP4 OBS creation_time）；chat epoch ↔ 影片相對毫秒 換算基準",
+    )
     latest_timeline_version: int | None = None
     latest_render_id: str | None = None
     latest_artifact_id: str | None = None
@@ -123,10 +136,72 @@ class UploadCompleted(BaseModel):
     project_id: str
     status: ProjectState
     key: str
+class ChatUploadUrl(BaseModel):
+    """POST /projects/{id}/chat-upload 201 response — single-part presigned PUT for chat.csv."""
+
+    bucket: str
+    key: str
+    url: str
+    expires_in_sec: int
+
+
+class AnalyzeRequest(BaseModel):
+    """POST /projects/{id}/analyze request body (all optional)."""
+
+    chat_key: str | None = Field(
+        default=None, description="覆寫 chat.csv 的 raw-bucket key（預設用 project 慣例路徑）"
+    )
+    video_start_epoch_ms: int | None = Field(
+        default=None,
+        description="影片 0:00 的 epoch 毫秒；未連結影片時可省略，退回聊天相對時間模式",
+    )
+    source_duration_ms: int | None = Field(default=None, ge=0)
+    params: dict | None = Field(default=None, description="偵測參數覆寫（sigma / max_clips / 洗版規則版本等）")
+
+
+class AnalyzeResult(BaseModel):
+    """POST /projects/{id}/analyze 202 response."""
+
+    project_id: str
+    status: ProjectState
+    highlight_count: int
+    analysis_version: str
+    source_duration_ms: int | None = None
+
+
+class VideoTimebaseRequest(BaseModel):
+    """PUT /projects/{id}/video-timebase — 連結影片時基（擇一提供 epoch 或 creation_time）。"""
+
+    video_start_epoch_ms: int | None = Field(
+        default=None, ge=0, description="影片 0:00 的 epoch 毫秒（直接提供）"
+    )
+    creation_time: str | None = Field(
+        default=None,
+        description="MP4 OBS creation_time（ISO-8601，可含奈秒/時區）；伺服器換算成 epoch 毫秒",
+    )
+    source_duration_ms: int | None = Field(default=None, ge=0, description="影片長度毫秒（可選）")
+
+
+class HighlightPatch(BaseModel):
+    """PATCH /projects/{id}/highlights/{hid} — 編輯器逐段校正（欄位皆 optional）。"""
+
+    correction_offset_ms: int | None = Field(
+        default=None,
+        description="事件窗相對目前窗的位移；往前抓為負（如 -20000）、延後為正。累加進 correction.offset_ms",
+    )
+    exclude: bool | None = Field(default=None, description="true=排除此段（如開場白）、false=取消排除")
+    selected: bool | None = None
+    locked: bool | None = None
+    note: str | None = Field(default=None, description="校正備註 / 排除原因")
 
 
 class Highlight(BaseModel):
-    """A highlights.v1 highlight item (editor candidate)."""
+    """A highlights.v1 highlight item (editor candidate).
+
+    Carries the chat-first analysis fields (optional, additive) alongside the
+    original speech-path fields. Nested objects are passed through as dicts —
+    the authoritative shape is ``contracts/highlights.v1.schema.json``.
+    """
 
     highlight_id: str
     start_ms: int
@@ -135,8 +210,19 @@ class Highlight(BaseModel):
     reason: str | None = None
     transcript: str | None = None
     suggested_title: str | None = None
+    source_segment_ids: list[str] | None = None
     selected: bool | None = None
     locked: bool | None = None
+    # chat-first additive fields
+    signal: str | None = None
+    status: str | None = None
+    excluded_reason: str | None = None
+    description: str | None = None
+    chat_window: dict | None = None
+    correction: dict | None = None
+    emotion: dict | None = None
+    detection: dict | None = None
+    provenance: dict | None = None
 
 
 class HighlightList(BaseModel):
@@ -145,6 +231,49 @@ class HighlightList(BaseModel):
     project_id: str
     source_duration_ms: int | None = None
     highlights: list[Highlight] = Field(default_factory=list)
+
+
+class Beat(BaseModel):
+    """A narrative beat in a highlight's cut-list (annotations.v1 beat)."""
+
+    order: int
+    beat: str | None = None
+    line: str | None = None
+    start_ms: int
+    end_ms: int
+    duration_ms: int | None = None
+
+
+class DimensionSpan(BaseModel):
+    """A single 5-dimension annotation span (annotations.v1 dimension_span)."""
+
+    dimension: str
+    start_ms: int
+    end_ms: int
+    text: str | None = None
+    messages: list[dict] | None = None
+
+
+class Annotation(BaseModel):
+    """Structured annotation for one highlight (annotations.v1 annotation)."""
+
+    highlight_id: str
+    title: str | None = None
+    description: str | None = None
+    dimensions: list[DimensionSpan] = Field(default_factory=list)
+    beats: list[Beat] | None = None
+    corrected_by: str | None = None
+    corrected_at: str | None = None
+
+
+class Annotations(BaseModel):
+    """Response of GET/POST/PUT /projects/{id}/annotations (annotations.v1 projection)."""
+
+    schema_version: str | None = None
+    project_id: str
+    annotation_version: str | None = None
+    annotations: list[Annotation] = Field(default_factory=list)
+    created_at: str | None = None
 
 
 class TimelineClip(BaseModel):

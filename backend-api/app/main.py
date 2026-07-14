@@ -18,15 +18,22 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from jsonschema import ValidationError
 
-from analysis.validate import validate_timeline
+from analysis.chatlog import clean_chatlog
+from analysis.chatlog.correction import apply_correction, creation_time_to_epoch_ms
+from analysis.validate import validate_annotations, validate_highlights, validate_timeline
 from app.auth import Principal, current_principal
 from app.aws import orchestration
 from app.repository import ProjectRepository, get_repository
 from app.schemas import (
+    AnalyzeRequest,
+    AnalyzeResult,
+    Annotations,
+    ChatUploadUrl,
     ComposeRequest,
     DownloadUrl,
     Highlight,
     HighlightList,
+    HighlightPatch,
     Project,
     ProjectCreate,
     ProjectCreated,
@@ -38,11 +45,12 @@ from app.schemas import (
     UploadCompleteRequest,
     UploadSession,
     UploadSessionCreate,
+    VideoTimebaseRequest,
 )
 from app.settings import get_settings
 from app.state import InvalidTransition, ProjectState, assert_project_transition
 from app.storage import Storage, get_storage, resolve_part_count
-from workers import composer_worker, creative_worker
+from workers import annotation_worker, chat_analysis_worker, composer_worker, creative_worker
 
 
 def _now_iso() -> str:
@@ -176,6 +184,39 @@ def get_project(
     return Project(**project)
 
 
+@app.put("/projects/{id}/video-timebase", response_model=Project)
+def set_video_timebase(
+    id: str,
+    body: VideoTimebaseRequest,
+    repo: ProjectRepository = Depends(get_repository),
+) -> Project:
+    """連結影片時基：設定 video_start_epoch_ms（chat epoch ↔ 影片相對毫秒 換算基準）。
+
+    可直接給 epoch，或給 MP4 OBS creation_time 由伺服器換算。之後 /analyze 產出的
+    highlights 才是誠實的影片相對毫秒（否則走 -chattime fallback）。
+    """
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    updates: dict = {}
+    if body.video_start_epoch_ms is not None:
+        updates["video_start_epoch_ms"] = body.video_start_epoch_ms
+    elif body.creation_time is not None:
+        try:
+            updates["video_start_epoch_ms"] = creation_time_to_epoch_ms(body.creation_time)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    if body.source_duration_ms is not None:
+        updates["source_duration_ms"] = body.source_duration_ms
+    if not updates:
+        raise HTTPException(
+            status_code=422,
+            detail="provide video_start_epoch_ms, creation_time, or source_duration_ms",
+        )
+    return Project(**repo.update_project(id, updates))
+
+
 @app.get("/projects/{id}/highlights", response_model=HighlightList)
 def get_highlights(
     id: str,
@@ -189,6 +230,227 @@ def get_highlights(
         source_duration_ms=project.get("source_duration_ms"),
         highlights=[Highlight(**h) for h in repo.list_highlights(id)],
     )
+
+
+@app.patch("/projects/{id}/highlights/{highlight_id}", response_model=Highlight)
+def patch_highlight(
+    id: str,
+    highlight_id: str,
+    body: HighlightPatch,
+    principal: Principal = Depends(current_principal),
+    repo: ProjectRepository = Depends(get_repository),
+) -> Highlight:
+    """編輯器逐段校正：聊天落後位移（往前抓/延後）、排除開場、鎖定、選取。
+
+    位移把事件窗（start_ms/end_ms）相對聊天窗平移，status→shifted；排除 → status=excluded、
+    selected=false。校正後仍需符合 highlights.v1。僅允許在編輯迴圈（COMPOSING/READY_TO_EDIT）。
+    """
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    status = ProjectState(project["status"])
+    if status not in (ProjectState.COMPOSING, ProjectState.READY_TO_EDIT):
+        raise HTTPException(status_code=409, detail=f"cannot edit highlights in status {status.value}")
+
+    highlight = repo.get_highlight(id, highlight_id)
+    if highlight is None:
+        raise HTTPException(status_code=404, detail="highlight not found")
+
+    updated = apply_correction(
+        highlight,
+        offset_ms=body.correction_offset_ms,
+        exclude=body.exclude,
+        selected=body.selected,
+        locked=body.locked,
+        corrected_by=principal.user_id,
+        note=body.note,
+        source_duration_ms=project.get("source_duration_ms"),
+    )
+    envelope = {
+        "schema_version": "highlights.v1",
+        "project_id": id,
+        "source_duration_ms": project.get("source_duration_ms") or updated["end_ms"],
+        "highlights": [updated],
+    }
+    try:
+        validate_highlights(envelope)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid highlight after correction: {exc.message}")
+
+    repo.update_highlight(id, highlight_id, updated)
+    return Highlight(**updated)
+
+
+# Ordered pre-analysis states the S3-event pipeline walks through before ANALYZING.
+_TO_ANALYZING_ORDER = [
+    ProjectState.CREATED,
+    ProjectState.UPLOAD_PENDING,
+    ProjectState.UPLOADING,
+    ProjectState.ANALYZING,
+]
+
+
+def _advance_to_analyzing(repo: ProjectRepository, project_id: str, current: ProjectState) -> None:
+    """Walk a project from a pre-analysis state up to ANALYZING (mirrors the S3-event trigger).
+
+    No-op if already ANALYZING. Raises ``InvalidTransition`` if the project is past
+    analysis (COMPOSING/READY_TO_EDIT/…) — re-analysis is out of scope for Slice 1.
+    """
+    if current is ProjectState.ANALYZING:
+        return
+    if current not in _TO_ANALYZING_ORDER[:-1]:
+        raise InvalidTransition(f"cannot analyze from {current.value}")
+    idx = _TO_ANALYZING_ORDER.index(current)
+    for target in _TO_ANALYZING_ORDER[idx + 1:]:
+        now = ProjectState(repo.get_project(project_id)["status"])
+        assert_project_transition(now, target)
+        repo.update_project(project_id, {"status": target.value})
+
+
+@app.post("/projects/{id}/chat-upload", response_model=ChatUploadUrl, status_code=201)
+def create_chat_upload(
+    id: str,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> ChatUploadUrl:
+    """Presign a single-part PUT for the chat-room log CSV (data plane bypasses the API)."""
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    settings = get_settings()
+    key = settings.chat_key(project.get("tenant_id", "demo"), id)
+    url = storage.presigned_put(settings.raw_bucket, key, content_type="text/csv")
+    return ChatUploadUrl(
+        bucket=settings.raw_bucket,
+        key=key,
+        url=url,
+        expires_in_sec=settings.presign_expiry_sec,
+    )
+
+
+@app.post("/projects/{id}/analyze", response_model=AnalyzeResult, status_code=202)
+def analyze_project(
+    id: str,
+    body: AnalyzeRequest | None = None,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> AnalyzeResult:
+    """Chat-first analysis (MVP inline shim): chat.csv → chatlog.v1 → highlights.v1.
+
+    Reads the uploaded CSV from the Raw bucket, cleans it (parse/re-sort/spam-tag),
+    persists chatlog.v1 to the Work bucket, drives the project into ANALYZING, then
+    runs the chat Analysis Worker (→ COMPOSING). TODO(async): move off the request
+    path into the ai-task lane (Step Functions) — same pure functions, no rework.
+    """
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    req = body or AnalyzeRequest()
+    settings = get_settings()
+    tenant = project.get("tenant_id", "demo")
+    chat_key = req.chat_key or settings.chat_key(tenant, id)
+
+    try:
+        csv_bytes = storage.get_bytes(settings.raw_bucket, chat_key)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"chat log not found at {chat_key}; upload chat.csv first")
+
+    csv_text = csv_bytes.decode("utf-8-sig", errors="replace")
+    chatlog = clean_chatlog(csv_text, id, source={"bucket": settings.raw_bucket, "key": chat_key})
+    if not chatlog["messages"]:
+        raise HTTPException(
+            status_code=422,
+            detail="no chat messages parsed from chat.csv (check CSV format / field mapping)",
+        )
+    storage.put_json(settings.work_bucket, settings.chatlog_key(tenant, id), chatlog)
+
+    try:
+        _advance_to_analyzing(repo, id, ProjectState(project["status"]))
+        result = chat_analysis_worker.run(
+            repo,
+            id,
+            chatlog,
+            video_start_epoch_ms=req.video_start_epoch_ms,
+            source_duration_ms=req.source_duration_ms,
+            params=req.params,
+        )
+    except InvalidTransition as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    proj = repo.get_project(id)
+    return AnalyzeResult(
+        project_id=id,
+        status=ProjectState(proj["status"]),
+        highlight_count=len(result["highlights"]),
+        analysis_version=result["analysis_version"],
+        source_duration_ms=proj.get("source_duration_ms"),
+    )
+
+
+@app.post("/projects/{id}/annotations", response_model=Annotations)
+def generate_annotations(
+    id: str,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> Annotations:
+    """產生結構化標註（階段 7–8）：規則式 5 維度 + 敘事節拍 → annotations.v1（存 work bucket）。
+
+    需已有 highlights（COMPOSING/READY_TO_EDIT）。不改 Project 狀態（編輯迴圈衍生產物）。
+    """
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    status = ProjectState(project["status"])
+    if status not in (ProjectState.COMPOSING, ProjectState.READY_TO_EDIT):
+        raise HTTPException(status_code=409, detail=f"cannot annotate in status {status.value}")
+    try:
+        doc = annotation_worker.run(repo, storage, get_settings(), id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return Annotations(**doc)
+
+
+@app.get("/projects/{id}/annotations", response_model=Annotations)
+def get_annotations(
+    id: str,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> Annotations:
+    """讀取已產生的 annotations.v1（work bucket）。"""
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    settings = get_settings()
+    tenant = project.get("tenant_id", "demo")
+    try:
+        doc = storage.get_json(settings.work_bucket, settings.annotations_key(tenant, id))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="annotations not generated; POST /annotations first")
+    return Annotations(**doc)
+
+
+@app.put("/projects/{id}/annotations", response_model=Annotations)
+def put_annotations(
+    id: str,
+    body: Annotations,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> Annotations:
+    """儲存人工編輯後的 annotations.v1（伺服器蓋 project_id/schema_version，驗證後落地）。"""
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    doc = body.model_dump(exclude_none=True)
+    doc["schema_version"] = "annotations.v1"
+    doc["project_id"] = id
+    try:
+        validate_annotations(doc)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=f"invalid annotations: {exc.message}")
+    settings = get_settings()
+    tenant = project.get("tenant_id", "demo")
+    storage.put_json(settings.work_bucket, settings.annotations_key(tenant, id), doc)
+    return Annotations(**doc)
 
 
 @app.get("/projects/{id}/timeline", response_model=Timeline)

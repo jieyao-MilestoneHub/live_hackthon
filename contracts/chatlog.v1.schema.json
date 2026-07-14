@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/chatlog.v1.schema.json",
+  "title": "chatlog.v1",
+  "description": "正規化直播聊天室紀錄（CSV 解析/過濾後）。分析 pipeline 的第一手訊號來源（非音訊）：規則式高光初篩以此為輸入。【重要單位差異】time_ms 為牆鐘 Unix epoch 毫秒（UTC），與其他所有契約的『影片相對毫秒（0 = 影片起點）』不同；需以 Project.video_start_epoch_ms 換算成影片相對毫秒。additive 新契約，不動既有契約。對應聊天優先分析流程階段一～二。",
+  "type": "object",
+  "required": ["schema_version", "project_id", "time_base", "messages"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "chatlog.v1" },
+    "project_id": { "type": "string" },
+    "time_base": {
+      "const": "epoch_ms",
+      "description": "本契約所有 time_ms / *_epoch_ms 的時間基準：Unix epoch 毫秒（UTC）。明示以防與『影片相對毫秒』混用。"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "原始聊天室 CSV 於 S3 的位置（與 transcript.v1.source 同形）",
+      "properties": {
+        "bucket": { "type": "string" },
+        "key": { "type": "string" },
+        "version_id": { "type": "string" }
+      }
+    },
+    "video_start_epoch_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "（可選鏡像）影片 0:00 對應的 epoch 毫秒；權威來源為 Project.video_start_epoch_ms，此處冗餘攜帶以便 chatlog 檔可獨立換算。衝突時以 Project 為準。"
+    },
+    "started_at_epoch_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "聊天紀錄最早訊息時間（epoch 毫秒），供 minute 分桶起點"
+    },
+    "ended_at_epoch_ms": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "聊天紀錄最晚訊息時間（epoch 毫秒）"
+    },
+    "message_count": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "messages 總筆數（含已標記洗版者）；便利欄，權威值以 messages 長度為準"
+    },
+    "filter": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "清洗/過濾規則版本與參數，供溯源與確定性重算",
+      "properties": {
+        "spam_ruleset_version": { "type": "string", "description": "洗版規則版本，如 spam-1.0.0" },
+        "kept_kinds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "保留為聊天輸入的原始訊息類型（如 [\"msg\"]）"
+        }
+      }
+    },
+    "minute_buckets": {
+      "type": ["array", "null"],
+      "description": "（可選、衍生快取）每分鐘 human 訊息量。權威值由 messages 即時重算（mean+1σ 熱區），此欄僅供 UI / 偵測加速，可省略。",
+      "items": { "$ref": "#/$defs/minute_bucket" }
+    },
+    "messages": {
+      "type": "array",
+      "description": "已依訊息內部 time 欄位重排序（不依賴原始檔案列順序）的聊天訊息",
+      "items": { "$ref": "#/$defs/message" }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "message": {
+      "type": "object",
+      "required": ["message_id", "time_ms", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "message_id": { "type": "string", "description": "project 內唯一；排序穩定用" },
+        "time_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "epoch 毫秒（UTC）；排序鍵。非影片相對時間。"
+        },
+        "user_id": { "type": ["string", "null"] },
+        "username": { "type": ["string", "null"] },
+        "text": { "type": "string" },
+        "kind": {
+          "type": "string",
+          "enum": ["human", "gift", "sticker", "system", "bot"],
+          "default": "human",
+          "description": "訊息類型；每分鐘熱區計算只採 human（且非 is_spam）。"
+        },
+        "is_spam": {
+          "type": "boolean",
+          "default": false,
+          "description": "清洗判定為洗版（導流廣告/罐頭問候/制式公告）；保留而非刪除，利於確定性重算與稽核。"
+        },
+        "spam_rule": {
+          "type": ["string", "null"],
+          "description": "命中的過濾規則 id（is_spam=true 時），如 promo_id / canned_greeting / announcement"
+        }
+      }
+    },
+    "minute_bucket": {
+      "type": "object",
+      "required": ["minute_index", "human_count"],
+      "additionalProperties": false,
+      "properties": {
+        "minute_index": { "type": "integer", "minimum": 0, "description": "自 started_at 起第 N 分鐘（0-based）" },
+        "start_epoch_ms": { "type": ["integer", "null"], "minimum": 0 },
+        "human_count": { "type": "integer", "minimum": 0, "description": "此分鐘的真人自發留言數（排除 spam / 非 human）" },
+        "is_hot": { "type": ["boolean", "null"], "description": "human_count >= mean + 1σ（熱區）" }
+      }
+    }
+  }
+}

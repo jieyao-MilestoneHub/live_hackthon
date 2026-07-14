@@ -13,8 +13,10 @@
 
 | 檔案 | 用途 | 生產者 → 消費者 |
 |---|---|---|
+| `chatlog.v1.schema.json` | 正規化聊天室 log（**聊天優先分析輸入**） | 分析 pipeline（Clean）→ Chat Analysis Worker |
 | `transcript.v1.schema.json` | 正規化逐字稿 | 分析 pipeline（Normalize）→ Analysis Worker |
-| `highlights.v1.schema.json` | 高光候選 | Analysis Worker → Composer / 編輯器 |
+| `highlights.v1.schema.json` | 高光候選（含聊天優先 additive 欄位） | Analysis Worker → Composer / 編輯器 |
+| `annotations.v1.schema.json` | 結構化標註（5 維度 + 敘事節拍，以 `highlight_id` 關聯） | 標註產生器（規則+AI+人工）→ 編輯器 |
 | `timeline.v1.schema.json` | 剪輯決策表 / EDL（append-only 版本化） | Composer / 編輯器 → Render |
 | `subtitle.v1.schema.json` | 動態字幕計畫 | Creative Worker → FFmpeg |
 | `effects.v1.schema.json` | 特效計畫（含 `effect_seed`） | Creative Worker → FFmpeg |
@@ -24,6 +26,13 @@
 
 `samples/` 內每個 schema 各有一份有效實例（皆以 `project-123` 串成同一條敘事），可作為
 契約驗證與 mock 資料。
+
+> **⚠️ 時間單位範疇（epoch vs 影片相對）**：`chatlog.v1` 的 `time_ms` / `*_epoch_ms` 是
+> **牆鐘 Unix epoch 毫秒（UTC）**，其餘所有契約的 `*_ms` 都是**影片相對毫秒（0 = 影片起點）**。
+> 兩者唯一橋樑是 `Project.video_start_epoch_ms`（來自 MP4 OBS `creation_time`）：
+> `video_relative_ms = clamp(chat_epoch_ms − video_start_epoch_ms, 0, source_duration_ms)`。
+> `chatlog.v1` 以 `time_base: "epoch_ms"` 明示，避免與影片相對毫秒混用。聊天觀眾反應落後
+> （chat lag）的事件校正是疊在換算之上、每個 highlight 的 `correction.offset_ms`。
 
 ## 命名 / 版本慣例
 

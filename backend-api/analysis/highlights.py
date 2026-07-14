@@ -9,9 +9,10 @@ MVP 以逐字稿訊號打分（情緒/驚呼關鍵詞、驚嘆號、疊字、語
 """
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import Any
+
+from analysis import emotion
 
 DEFAULT_PARAMS: dict[str, Any] = {
     "max_clips": 5,
@@ -21,21 +22,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "padding_after_ms": 3000,
 }
 
-# 情緒 / 高光關鍵詞（可擴充；LLM 模式可改用模型打分）
-EMOTION_KEYWORDS: tuple[str, ...] = (
-    "太扯", "扯", "太神", "神操作", "厲害", "超級", "精彩", "誇張", "天啊", "哇",
-    "起雞皮疙瘩", "衝", "太爽", "爽", "成功", "做到了", "感謝", "應援", "絕對",
-    "沒想到", "快看", "來了", "最精彩", "神",
-)
-
-_EXCLAIM_RE = re.compile(r"[！!]")
-_REPEAT_RE = re.compile(r"(.)\1{1,}")  # 疊字：啊啊啊、欸欸欸、來了來了
-
-# 分數權重
-_W_KEYWORD = 1.5
-_W_EXCLAIM = 2.0
-_W_REPEAT = 1.0
-_W_RATE = 0.15  # 語速（字/秒）代理興奮度
+# 情緒詞彙、regex、權重已移至 analysis.emotion（與聊天 Level-1 overlay 共用）。
+# 為相容既有 import，保留關鍵詞表別名。
+EMOTION_KEYWORDS = emotion.EMOTION_KEYWORDS
 
 SCORE_THRESHOLD = 0.45  # 正規化後的熱度門檻
 MERGE_GAP_MS = 12000     # 相鄰熱段間距 <= 此值（毫秒）則合併
@@ -44,22 +33,20 @@ MERGE_GAP_MS = 12000     # 相鄰熱段間距 <= 此值（毫秒）則合併
 def _raw_score(seg: dict[str, Any]) -> float:
     text: str = seg.get("text") or ""
     dur_ms = max(1.0, float(seg["end_ms"]) - float(seg["start_ms"]))
-    keywords = sum(text.count(k) for k in EMOTION_KEYWORDS)
-    exclaims = len(_EXCLAIM_RE.findall(text))
-    repeats = len(_REPEAT_RE.findall(text))
+    keywords = emotion.count_keywords(text)
+    exclaims = emotion.count_exclaims(text)
+    repeats = emotion.count_repeats(text)
     rate = len(text) / (dur_ms / 1000.0)  # 字/秒
-    return _W_KEYWORD * keywords + _W_EXCLAIM * exclaims + _W_REPEAT * repeats + _W_RATE * rate
+    return (
+        emotion.W_KEYWORD * keywords
+        + emotion.W_EXCLAIM * exclaims
+        + emotion.W_REPEAT * repeats
+        + emotion.W_RATE * rate
+    )
 
 
 def _matched_keywords(texts: list[str], limit: int = 4) -> list[str]:
-    found: list[str] = []
-    joined = "".join(texts)
-    for k in EMOTION_KEYWORDS:
-        if k in joined and k not in found:
-            found.append(k)
-        if len(found) >= limit:
-            break
-    return found
+    return emotion.matched_keywords(texts, limit)
 
 
 def _clamp_duration(start_ms: float, end_ms: float, duration_ms: float, params: dict[str, Any]) -> tuple[int, int]:

@@ -36,12 +36,23 @@ class Settings:
         """Raw-bucket object key per demand.md §十六."""
         return f"tenant={tenant_id}/project={project_id}/source/{filename}"
 
+    def chat_key(self, tenant_id: str, project_id: str, filename: str = "chat.csv") -> str:
+        """Raw-bucket key for the uploaded chat-room log CSV (聊天優先分析輸入)."""
+        return self.source_key(tenant_id, project_id, filename)
+
     def _project_prefix(self, tenant_id: str, project_id: str) -> str:
         return f"tenant={tenant_id}/project={project_id}"
 
     def transcript_key(self, tenant_id: str, project_id: str) -> str:
         """Work-bucket key for the normalized transcript.v1 (§十六)."""
         return f"{self._project_prefix(tenant_id, project_id)}/transcript/transcript.v1.json"
+    def chatlog_key(self, tenant_id: str, project_id: str) -> str:
+        """Work-bucket key for the normalized chatlog.v1 (分析中間產物)."""
+        return f"{self._project_prefix(tenant_id, project_id)}/chatlog/chatlog.json"
+
+    def annotations_key(self, tenant_id: str, project_id: str) -> str:
+        """Work-bucket key for the structured annotations.v1 (5 維度標註 + 敘事節拍)."""
+        return f"{self._project_prefix(tenant_id, project_id)}/annotations/annotations.json"
 
     def timeline_key(self, tenant_id: str, project_id: str, version: int) -> str:
         """Work-bucket key for a timeline version (§十六)."""

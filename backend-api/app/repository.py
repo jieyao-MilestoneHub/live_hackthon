@@ -90,6 +90,16 @@ class ProjectRepository(abc.ABC):
         """Return all highlight items for the project (empty list if none)."""
 
     @abc.abstractmethod
+    def get_highlight(self, project_id: str, highlight_id: str) -> dict[str, Any] | None:
+        """Return a single highlight item, or ``None`` if absent."""
+
+    @abc.abstractmethod
+    def update_highlight(
+        self, project_id: str, highlight_id: str, highlight: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Replace a single highlight item (editor correction). Raises ``KeyError`` if absent."""
+
+    @abc.abstractmethod
     def put_timeline(self, project_id: str, timeline: dict[str, Any]) -> int:
         """Persist a timeline version (append-only). Returns the version number.
 
@@ -168,6 +178,22 @@ class InMemoryProjectRepository(ProjectRepository):
 
     def list_highlights(self, project_id: str) -> list[dict[str, Any]]:
         return copy.deepcopy(self._highlights.get(project_id, []))
+
+    def get_highlight(self, project_id: str, highlight_id: str) -> dict[str, Any] | None:
+        for h in self._highlights.get(project_id, []):
+            if h["highlight_id"] == highlight_id:
+                return copy.deepcopy(h)
+        return None
+
+    def update_highlight(
+        self, project_id: str, highlight_id: str, highlight: dict[str, Any]
+    ) -> dict[str, Any]:
+        items = self._highlights.get(project_id, [])
+        for i, h in enumerate(items):
+            if h["highlight_id"] == highlight_id:
+                items[i] = copy.deepcopy(highlight)
+                return copy.deepcopy(highlight)
+        raise KeyError(f"highlight {highlight_id} not found in {project_id}")
 
     def put_timeline(self, project_id: str, timeline: dict[str, Any]) -> int:
         version = int(timeline["version"])
@@ -338,6 +364,35 @@ class DynamoProjectRepository(ProjectRepository):
             & Key(_SK).begins_with(_HIGHLIGHT_SK_PREFIX),
         )
         return [self._strip_keys(it) for it in resp.get("Items", [])]
+
+    def get_highlight(self, project_id: str, highlight_id: str) -> dict[str, Any] | None:
+        resp = self._table.get_item(
+            Key={_PK: _project_pk(project_id), _SK: f"{_HIGHLIGHT_SK_PREFIX}{highlight_id}"}
+        )
+        item = resp.get("Item")
+        return self._strip_keys(item) if item else None
+
+    def update_highlight(
+        self, project_id: str, highlight_id: str, highlight: dict[str, Any]
+    ) -> dict[str, Any]:
+        from botocore.exceptions import ClientError
+
+        record = {
+            _PK: _project_pk(project_id),
+            _SK: f"{_HIGHLIGHT_SK_PREFIX}{highlight_id}",
+            **{k: v for k, v in highlight.items() if v is not None},
+        }
+        try:
+            self._table.put_item(
+                Item=_to_dynamo(record),
+                ConditionExpression="attribute_exists(#pk)",  # only replace an existing highlight
+                ExpressionAttributeNames={"#pk": _PK},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise KeyError(f"highlight {highlight_id} not found in {project_id}") from exc
+            raise
+        return self._strip_keys(record)
 
     def put_timeline(self, project_id: str, timeline: dict[str, Any]) -> int:
         from botocore.exceptions import ClientError

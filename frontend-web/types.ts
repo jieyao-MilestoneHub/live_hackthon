@@ -55,6 +55,8 @@ export interface Project {
   target_duration_ms: number;
   source_duration_ms?: number;
   source_key?: string;
+  /** 影片 0:00 對應的 epoch 毫秒（來自 MP4 OBS creation_time）；chat epoch ↔ 影片相對毫秒 換算基準。 */
+  video_start_epoch_ms?: number;
   latest_timeline_version?: number;
   latest_render_id?: string;
   latest_artifact_id?: string;
@@ -88,6 +90,29 @@ export interface UploadSession {
   expires_in_sec?: number;
 }
 
+/** 偵測來源訊號（highlights.v1 signal）。 */
+export type HighlightSignal = "chat_volume" | "speech_emotion" | "fusion";
+
+/** 高光產出狀態（highlights.v1 status）。 */
+export type HighlightStatus = "candidate" | "included" | "excluded" | "shifted";
+
+/** Level-1 情緒分數與分項拆解（highlights.v1 emotion）。 */
+export interface HighlightEmotion {
+  score: number;
+  breakdown?: { keyword?: number; emoji?: number; punctuation?: number; volume?: number };
+  counts?: Record<string, number>;
+}
+
+/** 聊天窗 → 事件窗 的人工/AI 修正（highlights.v1 correction）。 */
+export interface HighlightCorrection {
+  applied?: boolean;
+  /** 事件窗相對聊天窗位移；往前抓為負（如 -20000）、延後為正。 */
+  offset_ms?: number;
+  corrected_by?: string | null;
+  corrected_at?: string | null;
+  note?: string | null;
+}
+
 /** A single highlight candidate (openapi: Highlight; projection of highlights.v1). */
 export interface Highlight {
   highlight_id: string;
@@ -97,8 +122,25 @@ export interface Highlight {
   reason?: string;
   transcript?: string;
   suggested_title?: string;
+  source_segment_ids?: string[];
   selected?: boolean;
   locked?: boolean;
+  // chat-first additive fields
+  signal?: HighlightSignal;
+  status?: HighlightStatus;
+  excluded_reason?: string | null;
+  description?: string | null;
+  /** 原始『聊天熱區』偵測窗（影片相對毫秒）；start_ms/end_ms 為修正後事件窗。 */
+  chat_window?: { start_ms: number; end_ms: number };
+  correction?: HighlightCorrection;
+  emotion?: HighlightEmotion;
+  detection?: {
+    minute_volume?: number;
+    baseline_mean?: number;
+    baseline_sigma?: number;
+    threshold?: number;
+  };
+  provenance?: Record<string, unknown>;
 }
 
 /** Response of GET /projects/{id}/highlights (openapi: HighlightList). */
@@ -106,6 +148,97 @@ export interface HighlightList {
   project_id: string;
   source_duration_ms?: number;
   highlights: Highlight[];
+}
+
+/** 5 維度標註類型（annotations.v1）：埋梗/反應-一開始/反應-轉折/笑點爆點/聊天室精彩留言。 */
+export type AnnotationDimension =
+  | "setup"
+  | "reaction_start"
+  | "reaction_turn"
+  | "punchline"
+  | "chat_highlights";
+
+/** 單一維度標註 span（annotations.v1 dimension_span）；時間為絕對影片相對毫秒。 */
+export interface DimensionSpan {
+  dimension: AnnotationDimension;
+  start_ms: number;
+  end_ms: number;
+  text?: string | null;
+  /** chat_highlights 維度：挑選的聊天室精彩留言。 */
+  messages?: { message_id?: string | null; username?: string | null; text: string }[];
+}
+
+/** 敘事節拍 cut-list 的一刀（annotations.v1 beat）。 */
+export interface Beat {
+  order: number;
+  beat?: AnnotationDimension | null;
+  line?: string | null;
+  start_ms: number;
+  end_ms: number;
+  duration_ms?: number | null;
+}
+
+/** 單一高光的結構化標註（annotations.v1 annotation）。 */
+export interface Annotation {
+  highlight_id: string;
+  title?: string | null;
+  description?: string | null;
+  dimensions: DimensionSpan[];
+  beats?: Beat[];
+  corrected_by?: string | null;
+  corrected_at?: string | null;
+}
+
+/** Response of GET /projects/{id}/annotations (openapi: Annotations; projection of annotations.v1). */
+export interface Annotations {
+  project_id: string;
+  annotation_version?: string | null;
+  annotations: Annotation[];
+}
+
+/** Response of POST /projects/{id}/chat-upload (openapi: ChatUploadUrl). */
+export interface ChatUploadUrl {
+  bucket: string;
+  key: string;
+  url: string;
+  expires_in_sec: number;
+}
+
+/** Request body for POST /projects/{id}/analyze (openapi: AnalyzeRequest). */
+export interface AnalyzeRequest {
+  chat_key?: string;
+  /** 影片 0:00 的 epoch 毫秒；未連結影片時可省略，退回聊天相對時間模式。 */
+  video_start_epoch_ms?: number;
+  source_duration_ms?: number;
+  params?: Record<string, unknown>;
+}
+
+/** Response of POST /projects/{id}/analyze (openapi: AnalyzeResult). */
+export interface AnalyzeResult {
+  project_id: string;
+  status: ProjectState;
+  highlight_count: number;
+  analysis_version: string;
+  source_duration_ms?: number;
+}
+
+/** Request body for PUT /projects/{id}/video-timebase (openapi: VideoTimebaseRequest). */
+export interface VideoTimebaseRequest {
+  video_start_epoch_ms?: number;
+  /** MP4 OBS creation_time（ISO-8601，可含奈秒/時區）；伺服器換算成 epoch 毫秒。 */
+  creation_time?: string;
+  source_duration_ms?: number;
+}
+
+/** Request body for PATCH /projects/{id}/highlights/{highlight_id} (openapi: HighlightPatch). */
+export interface HighlightPatch {
+  /** 事件窗相對目前窗的位移；往前抓為負（如 -20000）、延後為正。累加進 correction.offset_ms。 */
+  correction_offset_ms?: number;
+  /** true=排除此段（如開場白）、false=取消排除。 */
+  exclude?: boolean;
+  selected?: boolean;
+  locked?: boolean;
+  note?: string;
 }
 
 /** One clip in a timeline (openapi: TimelineClip; projection of timeline.v1). */

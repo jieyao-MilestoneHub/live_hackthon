@@ -50,6 +50,14 @@ class Storage(abc.ABC):
         """Return a presigned GET URL for downloading an object."""
 
     @abc.abstractmethod
+    def presigned_put(self, bucket: str, key: str, content_type: str | None = None) -> str:
+        """Return a presigned single-part PUT URL (for small direct uploads, e.g. chat.csv)."""
+
+    @abc.abstractmethod
+    def get_bytes(self, bucket: str, key: str) -> bytes:
+        """Read raw bytes at ``bucket/key``. Raises ``KeyError`` if absent."""
+
+    @abc.abstractmethod
     def put_json(self, bucket: str, key: str, doc: dict[str, Any]) -> str:
         """Write ``doc`` as JSON to ``bucket/key``. Returns the key."""
 
@@ -60,12 +68,6 @@ class Storage(abc.ABC):
     @abc.abstractmethod
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         """Write raw bytes to ``bucket/key``. Returns the key."""
-
-    @abc.abstractmethod
-    def get_bytes(self, bucket: str, key: str) -> bytes:
-        """Read the raw bytes at ``bucket/key``. Raises ``KeyError`` if absent.
-
-        Used by the FFmpeg render worker to pull source.mp4 from the raw bucket."""
 
 
 class StubStorage(Storage):
@@ -105,6 +107,15 @@ class StubStorage(Storage):
     def presigned_get(self, bucket: str, key: str) -> str:
         return f"http://localhost:8080/stub-download/{bucket}/{key}"
 
+    def presigned_put(self, bucket: str, key: str, content_type: str | None = None) -> str:
+        return f"http://localhost:8080/stub-upload/{bucket}/{key}"
+
+    def get_bytes(self, bucket: str, key: str) -> bytes:
+        try:
+            return self._blobs[(bucket, key)]
+        except KeyError:
+            raise KeyError(f"no object at {bucket}/{key}") from None
+
     def put_json(self, bucket: str, key: str, doc: dict[str, Any]) -> str:
         self._objects[(bucket, key)] = json.dumps(doc, ensure_ascii=False)
         return key
@@ -118,12 +129,6 @@ class StubStorage(Storage):
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         self._blobs[(bucket, key)] = data
         return key
-
-    def get_bytes(self, bucket: str, key: str) -> bytes:
-        try:
-            return self._blobs[(bucket, key)]
-        except KeyError:
-            raise KeyError(f"no object at {bucket}/{key}") from None
 
 
 class S3Storage(Storage):
@@ -182,6 +187,27 @@ class S3Storage(Storage):
             ExpiresIn=self._settings.presign_expiry_sec,
         )
 
+    def presigned_put(self, bucket: str, key: str, content_type: str | None = None) -> str:
+        params: dict[str, Any] = {"Bucket": bucket, "Key": key}
+        if content_type:
+            params["ContentType"] = content_type
+        return self._client.generate_presigned_url(
+            "put_object",
+            Params=params,
+            ExpiresIn=self._settings.presign_expiry_sec,
+        )
+
+    def get_bytes(self, bucket: str, key: str) -> bytes:
+        from botocore.exceptions import ClientError
+
+        try:
+            resp = self._client.get_object(Bucket=bucket, Key=key)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                raise KeyError(f"no object at {bucket}/{key}") from exc
+            raise
+        return resp["Body"].read()
+
     def put_json(self, bucket: str, key: str, doc: dict[str, Any]) -> str:
         self._client.put_object(
             Bucket=bucket,
@@ -205,17 +231,6 @@ class S3Storage(Storage):
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         self._client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
         return key
-
-    def get_bytes(self, bucket: str, key: str) -> bytes:
-        from botocore.exceptions import ClientError
-
-        try:
-            resp = self._client.get_object(Bucket=bucket, Key=key)
-        except ClientError as exc:
-            if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
-                raise KeyError(f"no object at {bucket}/{key}") from exc
-            raise
-        return resp["Body"].read()
 
 
 @lru_cache(maxsize=1)
