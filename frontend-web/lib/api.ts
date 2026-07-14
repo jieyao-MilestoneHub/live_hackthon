@@ -1,4 +1,4 @@
-// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.3.0).
+// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.4.0).
 // Base URL from NEXT_PUBLIC_API_BASE_URL (baked at build time). If a call fails
 // — backend unreachable, or a not-yet-built endpoint returns 501 — we fall back
 // to local mock data so the editor still drives a plausible flow in dev.
@@ -8,6 +8,9 @@
 // (lib/auth.ts) it is attached as `Authorization: Bearer <token>` on every call.
 
 import type {
+  AnalyzeRequest,
+  AnalyzeResult,
+  ChatUploadUrl,
   ComposeRequest,
   DownloadUrl,
   HighlightList,
@@ -22,6 +25,7 @@ import type {
   UploadPartETag,
   UploadSession,
   UploadSessionCreate,
+  VideoTimebaseRequest,
 } from '@/types';
 import { getIdToken } from './auth';
 import {
@@ -164,6 +168,77 @@ export async function completeUploadSession(
       status: 'ANALYZING',
       key: `tenant=demo/project=${projectId}/source/source.mp4`,
     };
+  }
+}
+
+// --- Chat-LOG analysis (analysis_source="chat") --------------------------
+// A chat-first project pairs the video with a chat-room LOG CSV. After the
+// video upload, the browser: presigns + PUTs the CSV (chat-upload), links the
+// video timebase (duration), then triggers POST /analyze → COMPOSING, and a
+// compose → READY_TO_EDIT. The Starter skips auto-Transcribe for these projects.
+
+/** POST /projects/{id}/chat-upload — presign a single-part PUT for chat.csv. */
+export async function createChatUpload(projectId: string): Promise<ChatUploadUrl> {
+  try {
+    return await request<ChatUploadUrl>(
+      `/projects/${encodeURIComponent(projectId)}/chat-upload`,
+      { method: 'POST' },
+    );
+  } catch (err) {
+    console.warn('[api] createChatUpload fell back to mock:', err);
+    return {
+      bucket: 'mock',
+      key: `tenant=demo/project=${projectId}/source/chat.csv`,
+      url: 'https://mock.local/chat-put',
+      expires_in_sec: 900,
+    };
+  }
+}
+
+/** PUT the chat LOG CSV to its presigned URL. No-op for mock/stub URLs. */
+export async function uploadChatCsv(session: ChatUploadUrl, file: File): Promise<void> {
+  if (/mock\.local|localhost|stub-upload/.test(session.url)) {
+    // Offline mock / local stub backend: no real object store to PUT into.
+    return;
+  }
+  const res = await fetch(session.url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'text/csv' },
+    body: file,
+  });
+  if (!res.ok) throw new Error(`chat CSV PUT failed: ${res.status}`);
+}
+
+/** PUT /projects/{id}/video-timebase — link video duration (+ optional epoch). */
+export async function setVideoTimebase(
+  projectId: string,
+  body: VideoTimebaseRequest,
+): Promise<Project> {
+  try {
+    return await request<Project>(
+      `/projects/${encodeURIComponent(projectId)}/video-timebase`,
+      { method: 'PUT', body: JSON.stringify(body) },
+    );
+  } catch (err) {
+    console.warn('[api] setVideoTimebase fell back to mock:', err);
+    return mockProject(projectId, 'UPLOADING');
+  }
+}
+
+/** POST /projects/{id}/analyze — run chat-LOG analysis (→ COMPOSING). */
+export async function analyzeProject(
+  projectId: string,
+  body?: AnalyzeRequest,
+): Promise<AnalyzeResult> {
+  try {
+    return await request<AnalyzeResult>(
+      `/projects/${encodeURIComponent(projectId)}/analyze`,
+      { method: 'POST', body: JSON.stringify(body ?? {}) },
+    );
+  } catch (err) {
+    console.warn('[api] analyzeProject fell back to mock:', err);
+    markMockAnalysisStart(projectId);
+    return { project_id: projectId, status: 'COMPOSING', highlight_count: 0, analysis_version: 'mock' };
   }
 }
 

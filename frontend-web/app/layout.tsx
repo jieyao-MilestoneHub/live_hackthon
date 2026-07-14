@@ -37,7 +37,7 @@ export default function RootLayout({
             <span>
               <Brand /> · AI 直播高光剪輯
             </span>
-            <span className="mono muted">M1 · Project / ms · openapi v0.2.0</span>
+            <span className="mono muted">M1 · Project / ms · openapi v0.4.0</span>
           </div>
         </footer>
       </body>
