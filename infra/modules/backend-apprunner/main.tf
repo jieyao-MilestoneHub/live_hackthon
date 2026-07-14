@@ -1,0 +1,121 @@
+# Backend delivery: ECR repository + App Runner service (FastAPI container).
+# App Runner pulls from ECR using an access role; the running task uses an
+# (optional) instance role for AWS API calls once the pipeline is wired.
+
+locals {
+  # A public.ecr.aws image needs image_repository_type=ECR_PUBLIC and no
+  # access role; a private ECR image needs type=ECR + an access role.
+  # This lets `terraform validate` and a first `apply` work with the nginx
+  # placeholder, then switch cleanly to the real private image via var override.
+  is_public_image       = startswith(var.backend_image, "public.ecr.aws")
+  image_repository_type = local.is_public_image ? "ECR_PUBLIC" : "ECR"
+}
+
+resource "aws_ecr_repository" "backend" {
+  name                 = var.name
+  image_tag_mutability = "MUTABLE"
+  force_delete         = true # dev convenience — allows destroy with images present
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+
+  tags = merge(var.tags, { Purpose = "backend-image" })
+}
+
+# --- IAM: ECR access role (App Runner service principal pulls the image) ---
+data "aws_iam_policy_document" "apprunner_build_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["build.apprunner.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "apprunner_ecr_access" {
+  name               = "${var.name}-apprunner-ecr-access"
+  assume_role_policy = data.aws_iam_policy_document.apprunner_build_assume.json
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "apprunner_ecr_access" {
+  role       = aws_iam_role.apprunner_ecr_access.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSAppRunnerServicePolicyForECRAccess"
+}
+
+# --- IAM: instance (task) role, assumed by the running container ---
+# Currently has no attached policies. Attach S3 (raw/work/output) + DynamoDB
+# access here when the backend starts calling AWS APIs.
+data "aws_iam_policy_document" "apprunner_tasks_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["tasks.apprunner.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "apprunner_instance" {
+  name               = "${var.name}-apprunner-instance"
+  assume_role_policy = data.aws_iam_policy_document.apprunner_tasks_assume.json
+  tags               = var.tags
+}
+
+resource "aws_apprunner_auto_scaling_configuration_version" "backend" {
+  auto_scaling_configuration_name = var.name
+  max_concurrency                 = 100
+  max_size                        = 2
+  min_size                        = 1
+  tags                            = var.tags
+}
+
+resource "aws_apprunner_service" "backend" {
+  service_name = var.name
+
+  source_configuration {
+    # Auto deployments require private ECR; disable for the public placeholder.
+    auto_deployments_enabled = local.is_public_image ? false : true
+
+    image_repository {
+      image_identifier      = var.backend_image
+      image_repository_type = local.image_repository_type
+
+      image_configuration {
+        port = tostring(var.container_port)
+      }
+    }
+
+    dynamic "authentication_configuration" {
+      for_each = local.is_public_image ? [] : [1]
+      content {
+        access_role_arn = aws_iam_role.apprunner_ecr_access.arn
+      }
+    }
+  }
+
+  instance_configuration {
+    cpu               = var.cpu
+    memory            = var.memory
+    instance_role_arn = aws_iam_role.apprunner_instance.arn
+  }
+
+  health_check_configuration {
+    protocol            = "HTTP"
+    path                = var.health_check_path
+    interval            = 10
+    timeout             = 5
+    healthy_threshold   = 1
+    unhealthy_threshold = 5
+  }
+
+  auto_scaling_configuration_arn = aws_apprunner_auto_scaling_configuration_version.backend.arn
+
+  tags = merge(var.tags, { Purpose = "backend-service" })
+}
