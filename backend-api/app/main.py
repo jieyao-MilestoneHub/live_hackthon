@@ -97,6 +97,7 @@ def create_project(
         "title": body.title,
         "status": ProjectState.CREATED.value,
         "target_duration_ms": body.target_duration_ms,
+        "analysis_source": body.analysis_source,
         "source_bucket": settings.raw_bucket,
         "source_key": source_key,
         "latest_timeline_version": 0,

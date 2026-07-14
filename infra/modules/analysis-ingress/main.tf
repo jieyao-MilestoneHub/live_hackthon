@@ -131,6 +131,12 @@ data "aws_iam_policy_document" "starter" {
     ]
     resources = [aws_sqs_queue.intake.arn]
   }
+  # Read the project's analysis_source so chat-LOG projects skip auto-Transcribe.
+  statement {
+    sid       = "ReadProjectForAnalysisSourceGate"
+    actions   = ["dynamodb:GetItem"]
+    resources = [var.table_arn]
+  }
 }
 
 resource "aws_iam_role_policy" "starter" {
@@ -154,11 +160,13 @@ resource "aws_lambda_function" "starter" {
 
   environment {
     variables = {
-      # The starter only parses the S3 key and calls StartExecution; it never
-      # touches DynamoDB or the raw bucket, so no table/bucket env is needed.
+      # Starter parses the S3 key + StartExecutions the analysis workflow, and
+      # reads the project's analysis_source (DynamoDB GetItem) to skip auto
+      # Transcribe for chat-LOG projects. No raw-bucket access needed.
       USE_INMEMORY               = "0"
       ENV                        = var.env
       ANALYSIS_STATE_MACHINE_ARN = var.state_machine_arn
+      DYNAMODB_TABLE             = var.dynamodb_table
     }
   }
 

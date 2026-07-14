@@ -8,9 +8,13 @@ with their endpoints in M2+. Keep this file in sync with ``contracts/openapi.yam
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.state import ProjectState, RenderState
+
+AnalysisSource = Literal["transcribe", "chat"]
 
 __all__ = [
     "ProjectState",
@@ -57,6 +61,13 @@ class ProjectCreate(BaseModel):
         examples=[30000],
         description="最終短片長度（毫秒），上限 60000（60 秒）",
     )
+    analysis_source: AnalysisSource = Field(
+        default="transcribe",
+        description=(
+            "高光分析來源。'transcribe'（預設）：影片上傳後 S3 事件自動走 Transcribe→highlights；"
+            "'chat'：改由聊天 LOG（POST /analyze）產生高光，Starter 會略過自動 Transcribe。"
+        ),
+    )
 
 
 class ProjectCreated(BaseModel):
@@ -75,6 +86,7 @@ class Project(BaseModel):
     status: ProjectState
     title: str | None = None
     target_duration_ms: int
+    analysis_source: AnalysisSource = "transcribe"
     source_duration_ms: int | None = None
     source_key: str | None = None
     video_start_epoch_ms: int | None = Field(
