@@ -3,6 +3,7 @@ import Link from 'next/link';
 import './globals.css';
 import { fontVars } from './fonts';
 import Brand from '@/components/Brand';
+import LoginWidget from '@/components/LoginWidget';
 
 export const metadata: Metadata = {
   title: '浪 LIVE — AI 直播高光剪輯',
@@ -24,9 +25,7 @@ export default function RootLayout({
             </Link>
             <nav className="topbar__nav">
               <span className="mono">直播高光剪輯</span>
-              <Link href="/" className="btn btn--ghost btn--sm">
-                進入編輯
-              </Link>
+              <LoginWidget />
             </nav>
           </div>
         </header>

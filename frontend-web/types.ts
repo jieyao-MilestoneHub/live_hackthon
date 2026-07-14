@@ -143,6 +143,67 @@ export interface Timeline {
   clips: TimelineClip[];
 }
 
+/** One completed multipart part with its S3 ETag (openapi: UploadPartETag). */
+export interface UploadPartETag {
+  part_number: number;
+  /** S3 part PUT ETag (may be a quoted string, e.g. `"abc…"`). */
+  etag: string;
+}
+
+/** Request body for POST /projects/{id}/upload-session/complete (openapi: UploadCompleteRequest). */
+export interface UploadCompleteRequest {
+  upload_id: string;
+  parts: UploadPartETag[];
+}
+
+/** Response of POST /projects/{id}/upload-session/complete (openapi: UploadCompleted). */
+export interface UploadCompleted {
+  project_id: string;
+  status: ProjectState;
+  /** Materialized Raw-bucket object key (source.mp4 now exists). */
+  key: string;
+}
+
+/** Request body for POST /projects/{id}/compose (openapi: ComposeRequest). */
+export interface ComposeRequest {
+  target_duration_ms?: number;
+  locked_highlight_ids?: string[];
+  excluded_highlight_ids?: string[];
+}
+
+/** Response of PUT /projects/{id}/timeline and POST /projects/{id}/compose. */
+export interface TimelineVersionResponse {
+  timeline_version: number;
+}
+
+/** Request body for POST /projects/{id}/renders (openapi: RenderCreate). */
+export interface RenderCreate {
+  /** Omit to use the project's latest timeline version. */
+  timeline_version?: number;
+}
+
+/** Response of POST /projects/{id}/renders — 202 (openapi: RenderCreated). */
+export interface RenderCreated {
+  render_id: string;
+  status: RenderState;
+}
+
+/** Response of GET /renders/{render_id} (openapi: Render). */
+export interface Render {
+  render_id: string;
+  project_id: string;
+  status: RenderState;
+  /** Human-facing stage label while running (e.g. PLANNING_SUBTITLES). */
+  current_stage?: string;
+  timeline_version?: number;
+  artifact_id?: string;
+  error_code?: string;
+  error_message?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
 /** Response of GET /artifacts/{artifact_id}/download (openapi: DownloadUrl). */
 export interface DownloadUrl {
   url: string;
@@ -166,9 +227,24 @@ export const EDITABLE_STATES: ReadonlySet<ProjectState> = new Set<ProjectState>(
   'ARTIFACT_READY',
 ]);
 
-/** Terminal Project states — polling stops once one is reached. */
+/** Terminal Project states — status polling stops once one is reached. */
 export const TERMINAL_STATES: ReadonlySet<ProjectState> = new Set<ProjectState>([
   'READY_TO_EDIT',
   'ARTIFACT_READY',
+  'FAILED',
+]);
+
+/** Project states where getProject should keep polling (async backend work in flight). */
+export const POLLABLE_PROJECT_STATES: ReadonlySet<ProjectState> = new Set<ProjectState>([
+  'UPLOADING',
+  'ANALYZING',
+  'COMPOSING',
+  'RENDER_REQUESTED',
+  'RENDERING',
+]);
+
+/** Terminal Render states — render polling stops once one is reached. */
+export const RENDER_TERMINAL_STATES: ReadonlySet<RenderState> = new Set<RenderState>([
+  'SUCCEEDED',
   'FAILED',
 ]);

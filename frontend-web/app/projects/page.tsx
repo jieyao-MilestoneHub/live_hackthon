@@ -4,15 +4,33 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
+  composeTimeline,
+  createRender,
   createUploadSession,
+  getDownloadUrl,
   getHighlights,
   getProject,
+  getRender,
   getTimeline,
+  updateTimeline,
   uploadToS3,
 } from '@/lib/api';
 import { formatMs, msToSecondsLabel, projectPhase } from '@/lib/format';
-import { EDITABLE_STATES } from '@/types';
-import type { AspectRatio, Highlight, Project, Timeline } from '@/types';
+import {
+  EDITABLE_STATES,
+  POLLABLE_PROJECT_STATES,
+  RENDER_TERMINAL_STATES,
+} from '@/types';
+import type {
+  AspectRatio,
+  ComposeRequest,
+  Highlight,
+  Project,
+  Render,
+  RenderCreated,
+  Timeline,
+  TimelineClip,
+} from '@/types';
 import StatusPill from '@/components/StatusPill';
 import StageRail from '@/components/StageRail';
 import ScoreMeter from '@/components/ScoreMeter';
@@ -28,7 +46,50 @@ const ASPECT_CSS: Record<AspectRatio, string> = {
 };
 
 function isPollable(status: Project['status']): boolean {
-  return status === 'UPLOADING' || status === 'ANALYZING' || status === 'COMPOSING';
+  return POLLABLE_PROJECT_STATES.has(status);
+}
+
+const sortedClips = (clips: TimelineClip[]): TimelineClip[] =>
+  [...clips].sort((a, b) => a.timeline_order - b.timeline_order);
+
+/**
+ * Rebuild a Timeline request body from the current (possibly reordered / trimmed)
+ * clip list — renumbers timeline_order and re-packs the timeline offsets so the
+ * clips are contiguous from 0. The server assigns the new version number.
+ */
+function buildTimelineBody(
+  base: Timeline,
+  project: Project,
+  clips: TimelineClip[],
+  opts: { aspect: AspectRatio; subtitleOn: boolean; effectIntensity: 'low' | 'medium' | 'high' },
+): { body: Timeline; actualMs: number } {
+  let cursor = 0;
+  const packed: TimelineClip[] = clips.map((c, i) => {
+    const dur = Math.max(0, c.source_end_ms - c.source_start_ms);
+    const timeline_start_ms = cursor;
+    const timeline_end_ms = cursor + dur;
+    cursor = timeline_end_ms;
+    return {
+      timeline_order: i + 1,
+      highlight_id: c.highlight_id,
+      source_start_ms: c.source_start_ms,
+      source_end_ms: c.source_end_ms,
+      timeline_start_ms,
+      timeline_end_ms,
+    };
+  });
+  const body: Timeline = {
+    schema_version: base.schema_version ?? 'timeline.v1',
+    project_id: project.project_id,
+    version: base.version,
+    target_duration_ms: project.target_duration_ms ?? base.target_duration_ms,
+    actual_duration_ms: cursor,
+    aspect_ratio: opts.aspect,
+    subtitle_settings: { enabled: opts.subtitleOn, mode: base.subtitle_settings?.mode ?? 'auto' },
+    effect_settings: { enabled: true, intensity: opts.effectIntensity },
+    clips: packed,
+  };
+  return { body, actualMs: cursor };
 }
 
 // --- Upload region -------------------------------------------------------
@@ -59,7 +120,9 @@ function UploadRegion({
         size_bytes: file.size,
         part_count: 1,
       });
-      await uploadToS3(session, file, setPct);
+      // uploadToS3 PUTs each part, collects ETags, then POSTs the multipart
+      // -complete handshake — which materializes source.mp4 and triggers analysis.
+      await uploadToS3(projectId, session, file, setPct);
       onUploaded();
     } catch (err) {
       console.error(err);
@@ -127,10 +190,16 @@ function EditorRegions({
   project,
   highlights,
   timeline,
+  render,
+  onProjectPatch,
+  onRenderStarted,
 }: {
   project: Project;
   highlights: Highlight[];
   timeline: Timeline;
+  render: Render | null;
+  onProjectPatch: (patch: Partial<Project>) => void;
+  onRenderStarted: (created: RenderCreated) => void;
 }) {
   const [aspect, setAspect] = useState<AspectRatio>(timeline.aspect_ratio ?? '9:16');
   const [subtitleOn, setSubtitleOn] = useState<boolean>(
@@ -146,6 +215,19 @@ function EditorRegions({
     () => new Set(highlights.filter((h) => h.locked).map((h) => h.highlight_id)),
   );
 
+  // Editable timeline state (reorder / delete persist via Save Draft → PUT).
+  const [clips, setClips] = useState<TimelineClip[]>(() => sortedClips(timeline.clips));
+  const [version, setVersion] = useState<number>(timeline.version);
+  const [actualMs, setActualMs] = useState<number>(timeline.actual_duration_ms);
+  const [savedVersion, setSavedVersion] = useState<number | null>(null);
+
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [recomposing, setRecomposing] = useState(false);
+  const [renderErr, setRenderErr] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadErr, setDownloadErr] = useState<string | null>(null);
+
   function toggle(set: Set<string>, id: string): Set<string> {
     const next = new Set(set);
     if (next.has(id)) next.delete(id);
@@ -153,8 +235,109 @@ function EditorRegions({
     return next;
   }
 
-  const clips = [...timeline.clips].sort((a, b) => a.timeline_order - b.timeline_order);
-  const total = timeline.actual_duration_ms || 1;
+  function moveClip(index: number, dir: -1 | 1) {
+    setClips((prev) => {
+      const next = [...prev];
+      const target = index + dir;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+    setSaveMsg(null);
+  }
+
+  function deleteClip(index: number) {
+    setClips((prev) => prev.filter((_, i) => i !== index));
+    setSaveMsg(null);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setSaveMsg(null);
+    try {
+      const { body, actualMs: newActual } = buildTimelineBody(timeline, project, clips, {
+        aspect,
+        subtitleOn,
+        effectIntensity,
+      });
+      const res = await updateTimeline(project.project_id, body);
+      setVersion(res.timeline_version);
+      setSavedVersion(res.timeline_version);
+      setActualMs(newActual);
+      setSaveMsg(`已儲存為 v${res.timeline_version}（${clips.length} 段）`);
+      onProjectPatch({ latest_timeline_version: res.timeline_version });
+    } catch (err) {
+      console.error(err);
+      setSaveMsg(null);
+      setRenderErr('儲存失敗，請重試。');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleRecompose() {
+    setRecomposing(true);
+    setSaveMsg(null);
+    try {
+      const body: ComposeRequest = {
+        target_duration_ms: project.target_duration_ms,
+        locked_highlight_ids: [...locked],
+        excluded_highlight_ids: highlights
+          .filter((h) => !selected.has(h.highlight_id))
+          .map((h) => h.highlight_id),
+      };
+      await composeTimeline(project.project_id, body);
+      const tl = await getTimeline(project.project_id);
+      setClips(sortedClips(tl.clips));
+      setVersion(tl.version);
+      setActualMs(tl.actual_duration_ms);
+      setSavedVersion(tl.version);
+      setSaveMsg(`已重新組片（v${tl.version}）`);
+      onProjectPatch({ latest_timeline_version: tl.version });
+    } catch (err) {
+      console.error(err);
+      setRenderErr('重新組片失敗，請重試。');
+    } finally {
+      setRecomposing(false);
+    }
+  }
+
+  async function handleRender() {
+    setRenderErr(null);
+    try {
+      const useVersion = savedVersion ?? project.latest_timeline_version ?? version;
+      const created = await createRender(project.project_id, useVersion);
+      onRenderStarted(created);
+    } catch (err) {
+      console.error(err);
+      setRenderErr('提交渲染失敗，請重試。');
+    }
+  }
+
+  const artifactId = render?.artifact_id || project.latest_artifact_id;
+  const renderActive = !!render && !RENDER_TERMINAL_STATES.has(render.status);
+  const renderDone =
+    render?.status === 'SUCCEEDED' || project.status === 'ARTIFACT_READY';
+
+  async function handleDownload() {
+    if (!artifactId) {
+      setDownloadErr('尚無可下載的成品。');
+      return;
+    }
+    setDownloadErr(null);
+    setDownloading(true);
+    try {
+      const { url } = await getDownloadUrl(artifactId);
+      window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      console.error(err);
+      setDownloadErr('取得下載連結失敗，請重試。');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  const total = actualMs || 1;
 
   return (
     <div className="editor">
@@ -182,12 +365,10 @@ function EditorRegions({
             <span className="preview__note">PREVIEW · {aspect}</span>
           </div>
         </div>
-        <div
-          style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 10 }}
-        >
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 10 }}>
           <input type="range" min={0} max={100} defaultValue={18} disabled style={{ flex: 1 }} />
           <span className="mono muted" style={{ fontSize: 12 }}>
-            0:12.480
+            {formatMs(Math.round(total * 0.18))}
           </span>
         </div>
         <p className="hint">
@@ -293,8 +474,7 @@ function EditorRegions({
         <div className="panel__head">
           <span className="panel__title">Timeline</span>
           <span className="panel__eyebrow mono">
-            v{timeline.version} · {formatMs(timeline.actual_duration_ms)} /{' '}
-            {formatMs(timeline.target_duration_ms)}
+            v{version} · {formatMs(actualMs)} / {formatMs(timeline.target_duration_ms)}
           </span>
         </div>
         <div className="track">
@@ -306,10 +486,10 @@ function EditorRegions({
           <div className="track__lane">
             {clips.map((c) => (
               <div
-                key={c.timeline_order}
+                key={`${c.highlight_id}-${c.timeline_order}`}
                 className="track__clip"
                 style={{
-                  flexBasis: `${((c.timeline_end_ms - c.timeline_start_ms) / total) * 100}%`,
+                  flexBasis: `${((c.source_end_ms - c.source_start_ms) / total) * 100}%`,
                 }}
                 title={`${c.highlight_id} · ${c.timeline_start_ms}–${c.timeline_end_ms} ms`}
               >
@@ -323,19 +503,109 @@ function EditorRegions({
           </div>
           <span className="playhead" style={{ left: '38%' }} />
         </div>
-        <p className="hint">拖曳排序／刪除／鎖定與重新組片為 M2／M3 功能，此處先呈現骨架。</p>
+
+        {/* Editable clip list: reorder (up/down) + delete, then Save Draft persists */}
+        {clips.length === 0 ? (
+          <p className="hint">時間軸沒有片段了，重新組片或加回高光候選。</p>
+        ) : (
+          <div className="cliplist">
+            {clips.map((c, i) => (
+              <div className="cliprow" key={`${c.highlight_id}-${i}`}>
+                <span className="cliprow__order">#{i + 1}</span>
+                <span className="cliprow__id">{c.highlight_id}</span>
+                <span className="cliprow__time">
+                  {formatMs(c.source_start_ms)}–{formatMs(c.source_end_ms)}
+                </span>
+                <div className="cliprow__ops">
+                  <button
+                    className="clip__op"
+                    onClick={() => moveClip(i, -1)}
+                    disabled={i === 0}
+                    aria-label="上移"
+                    title="上移"
+                  >
+                    ↑
+                  </button>
+                  <button
+                    className="clip__op"
+                    onClick={() => moveClip(i, 1)}
+                    disabled={i === clips.length - 1}
+                    aria-label="下移"
+                    title="下移"
+                  >
+                    ↓
+                  </button>
+                  <button
+                    className="clip__op"
+                    onClick={() => deleteClip(i)}
+                    aria-label="刪除"
+                    title="刪除"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <p className="hint">調整排序／刪除片段後，按「Save Draft」存成新的 Timeline 版本。</p>
       </section>
 
       {/* Actions */}
       <div className="panel col-span">
         <div className="actions">
-          <button className="btn btn--ghost" disabled title="M3：儲存為新 Timeline 版本">
-            Save Draft
+          <button
+            className="btn btn--ghost"
+            onClick={handleRecompose}
+            disabled={recomposing || saving}
+            title="以目前的選取／鎖定重新組片"
+          >
+            {recomposing ? '重新組片中…' : '↻ 重新組片'}
           </button>
-          <button className="btn" disabled title="M4：提交 Render">
-            Render Video ▸
-          </button>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <button
+              className="btn btn--ghost"
+              onClick={handleSave}
+              disabled={saving || recomposing}
+              title="儲存為新 Timeline 版本"
+            >
+              {saving ? '儲存中…' : 'Save Draft'}
+            </button>
+            {renderDone && artifactId ? (
+              <button className="btn" onClick={handleDownload} disabled={downloading}>
+                {downloading ? '取得連結…' : '下載成品 ⬇'}
+              </button>
+            ) : (
+              <button
+                className="btn"
+                onClick={handleRender}
+                disabled={renderActive || saving || recomposing || clips.length === 0}
+                title="凍結目前版本並提交渲染"
+              >
+                {renderActive ? '渲染中…' : 'Render Video ▸'}
+              </button>
+            )}
+          </div>
         </div>
+
+        {saveMsg && <p className="note-ok">{saveMsg}</p>}
+        {render && (
+          <div className="render-status">
+            <span className={`pill pill--${renderDone ? 'done' : 'live'}`}>
+              <span className="pill__dot" />
+              {render.status}
+            </span>
+            {render.current_stage && <span>· {render.current_stage}</span>}
+            {render.timeline_version != null && (
+              <span className="muted">· timeline v{render.timeline_version}</span>
+            )}
+          </div>
+        )}
+        {render?.status === 'FAILED' && (
+          <p className="error">渲染失敗。{render.error_code} {render.error_message}</p>
+        )}
+        {renderErr && <p className="error">{renderErr}</p>}
+        {downloadErr && <p className="error">{downloadErr}</p>}
       </div>
     </div>
   );
@@ -351,6 +621,7 @@ function ProjectView() {
   const [editor, setEditor] = useState<{ highlights: Highlight[]; timeline: Timeline } | null>(
     null,
   );
+  const [render, setRender] = useState<Render | null>(null);
 
   useEffect(() => {
     if (!projectId) return;
@@ -366,6 +637,8 @@ function ProjectView() {
     };
   }, [projectId]);
 
+  // Poll project status while backend work is in flight (upload → analyze →
+  // compose, and render_requested → rendering).
   useEffect(() => {
     if (!projectId || !project || !isPollable(project.status)) return;
     const t = setTimeout(async () => {
@@ -378,6 +651,7 @@ function ProjectView() {
     return () => clearTimeout(t);
   }, [projectId, project]);
 
+  // Load the editor data once the project is editable.
   useEffect(() => {
     if (!projectId || !project || !EDITABLE_STATES.has(project.status) || editor) return;
     let active = true;
@@ -390,6 +664,44 @@ function ProjectView() {
       active = false;
     };
   }, [projectId, project, editor]);
+
+  // Poll the active render for stage/status; on success refresh the project so
+  // it flips to ARTIFACT_READY and carries latest_artifact_id.
+  useEffect(() => {
+    if (!render || RENDER_TERMINAL_STATES.has(render.status)) return;
+    let active = true;
+    const t = setTimeout(async () => {
+      try {
+        const r = await getRender(render.render_id);
+        if (!active) return;
+        setRender(r);
+        if (r.status === 'SUCCEEDED') {
+          try {
+            setProject(await getProject(projectId));
+          } catch {
+            /* keep the render result even if the project refresh fails */
+          }
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    }, POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
+  }, [render, projectId]);
+
+  function handleRenderStarted(created: RenderCreated) {
+    setRender({ render_id: created.render_id, project_id: projectId, status: created.status });
+    setProject((p) =>
+      p ? { ...p, status: 'RENDER_REQUESTED', latest_render_id: created.render_id } : p,
+    );
+  }
+
+  function handleProjectPatch(patch: Partial<Project>) {
+    setProject((p) => (p ? { ...p, ...patch } : p));
+  }
 
   if (!projectId) {
     return (
@@ -474,6 +786,9 @@ function ProjectView() {
             project={project}
             highlights={editor.highlights}
             timeline={editor.timeline}
+            render={render}
+            onProjectPatch={handleProjectPatch}
+            onRenderStarted={handleRenderStarted}
           />
         ) : (
           <div className="panel" style={{ marginTop: 20 }}>

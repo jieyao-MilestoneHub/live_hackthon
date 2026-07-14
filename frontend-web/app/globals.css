@@ -858,6 +858,126 @@ input[type="checkbox"] {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ---------- Editable clip list (reorder / delete) ---------- */
+.cliplist {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.cliprow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.cliprow__order {
+  font-family: var(--f-mono);
+  font-weight: 700;
+  color: var(--crest);
+  min-width: 30px;
+}
+.cliprow__id {
+  font-family: var(--f-mono);
+  font-size: 13px;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.cliprow__time {
+  font-family: var(--f-mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.cliprow__ops {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+.clip__op {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--ink);
+  color: var(--muted);
+  border-radius: 6px;
+  font-family: var(--f-mono);
+  font-size: 13px;
+  line-height: 1;
+  padding: 5px 9px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+.clip__op:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--crest);
+}
+.clip__op:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* ---------- Save / render feedback ---------- */
+.note-ok {
+  color: var(--good);
+  font-size: 13px;
+  margin: 12px 0 0;
+}
+.render-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  font-family: var(--f-mono);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ---------- Inline auth widget (top bar) ---------- */
+.auth {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.auth__form {
+  flex-wrap: wrap;
+}
+.auth__input {
+  padding: 7px 10px;
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  width: 140px;
+  max-width: 40vw;
+}
+.auth__input::placeholder {
+  color: var(--faint);
+}
+.auth__input:focus {
+  outline: none;
+  border-color: var(--crest);
+  box-shadow: 0 0 0 3px rgba(255, 61, 113, 0.16);
+}
+.auth__user {
+  font-family: var(--f-mono);
+  font-size: 12px;
+  color: var(--text);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.auth__err {
+  color: var(--bad);
+  font-size: 12px;
 }
 
 /* ---------- Load reveal (pure CSS — no JS dependency, always ends visible) ---------- */
