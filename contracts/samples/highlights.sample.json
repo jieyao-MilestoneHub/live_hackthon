@@ -2,13 +2,16 @@
   "schema_version": "highlights.v1",
   "project_id": "project-123",
   "source_duration_ms": 240000,
-  "analysis_version": "highlight-rule-1.0.0",
+  "analysis_version": "highlight-chat-1.0.0",
   "parameters": {
     "max_clips": 5,
     "min_duration_ms": 15000,
     "max_duration_ms": 60000,
     "padding_before_ms": 2000,
-    "padding_after_ms": 3000
+    "padding_after_ms": 3000,
+    "hot_zone_sigma": 1.0,
+    "event_backshift_ms": 20000,
+    "spam_ruleset_version": "spam-1.0.0"
   },
   "highlights": [
     {
@@ -16,23 +19,73 @@
       "start_ms": 150000,
       "end_ms": 188000,
       "score": 0.93,
-      "reason": "情緒詞與驚呼密集（來了、超級厲害、成功了、太爽了），語速高峰",
+      "signal": "chat_volume",
+      "status": "included",
+      "description": "成功挑戰時刻：鋪陳緊張 → 動手 → 一次過關，聊天室同步刷『成功了/太爽了』",
+      "chat_window": { "start_ms": 150000, "end_ms": 188000 },
+      "emotion": {
+        "score": 0.93,
+        "breakdown": { "keyword": 0.46, "emoji": 0.22, "punctuation": 0.15, "volume": 0.10 },
+        "counts": { "keyword": 7, "emoji": 11, "exclaim": 9, "human_msgs": 34 }
+      },
+      "detection": { "minute_volume": 34, "baseline_mean": 8.4, "baseline_sigma": 5.1, "threshold": 13.5 },
+      "reason": "情緒詞與驚呼密集（來了、超級厲害、成功了、太爽了），每分鐘真人留言 ≥ mean+1σ",
       "transcript": "欸欸欸來了來了！就是現在！大家快看，這個超級厲害，我要衝了啊啊啊！成功了！我們做到了！太爽了吧這個，感謝大家的應援！",
       "suggested_title": "衝了！成功時刻",
       "source_segment_ids": ["seg_0007", "seg_0008"],
       "selected": true,
-      "locked": false
+      "locked": false,
+      "provenance": { "detected_from": "chatlog.v1", "pipeline": "chat_volume->emotion->human_correct" }
     },
     {
       "highlight_id": "hl-002",
       "start_ms": 43000,
       "end_ms": 78000,
       "score": 0.88,
-      "reason": "驚嘆與高強度情緒（太扯了、太神了、起雞皮疙瘩、最精彩）",
+      "signal": "chat_volume",
+      "status": "shifted",
+      "description": "神操作：觀眾看到效果才開始刷屏，真正的哏比聊天尖峰早約 20 秒",
+      "chat_window": { "start_ms": 63000, "end_ms": 98000 },
+      "correction": {
+        "applied": true,
+        "offset_ms": -20000,
+        "corrected_by": "editor-1",
+        "corrected_at": "2026-07-14T10:04:30Z",
+        "note": "聊天落後，往前抓 20s 到真正入口反應"
+      },
+      "emotion": {
+        "score": 0.88,
+        "breakdown": { "keyword": 0.42, "emoji": 0.20, "punctuation": 0.14, "volume": 0.12 },
+        "counts": { "keyword": 6, "emoji": 9, "exclaim": 7, "human_msgs": 31 }
+      },
+      "detection": { "minute_volume": 31, "baseline_mean": 8.4, "baseline_sigma": 5.1, "threshold": 13.5 },
+      "reason": "驚嘆與高強度情緒（太扯了、太神了、起雞皮疙瘩、最精彩），每分鐘真人留言 ≥ mean+1σ",
       "transcript": "哇這個真的太扯了！各位有看到嗎？這波操作也太神了吧，我完全沒想到會這樣！天啊我起雞皮疙瘩了，這絕對是今天最精彩的一段，太誇張了！",
       "suggested_title": "神操作",
       "source_segment_ids": ["seg_0003", "seg_0004"],
       "selected": true,
+      "locked": false,
+      "provenance": { "detected_from": "chatlog.v1", "pipeline": "chat_volume->emotion->human_correct" }
+    },
+    {
+      "highlight_id": "hl-003",
+      "start_ms": 0,
+      "end_ms": 30000,
+      "score": 0.31,
+      "signal": "chat_volume",
+      "status": "excluded",
+      "excluded_reason": "僅為開場暖場/自我介紹，非真正橋段",
+      "chat_window": { "start_ms": 0, "end_ms": 30000 },
+      "emotion": {
+        "score": 0.31,
+        "breakdown": { "keyword": 0.10, "emoji": 0.09, "punctuation": 0.06, "volume": 0.06 },
+        "counts": { "keyword": 1, "emoji": 3, "exclaim": 2, "human_msgs": 15 }
+      },
+      "detection": { "minute_volume": 15, "baseline_mean": 8.4, "baseline_sigma": 5.1, "threshold": 13.5 },
+      "reason": "開場問候造成的短暫訊息量上升（罐頭問候已過濾，仍有殘餘）",
+      "suggested_title": "開場",
+      "source_segment_ids": ["seg_0001"],
+      "selected": false,
       "locked": false
     }
   ],

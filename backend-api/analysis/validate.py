@@ -99,6 +99,16 @@ def validate_artifact(doc: dict[str, Any]) -> None:
     _validator("artifact.v1.schema.json").validate(doc)
 
 
+def validate_chatlog(doc: dict[str, Any]) -> None:
+    """Validate a doc against chatlog.v1. Raises jsonschema.ValidationError."""
+    _validator("chatlog.v1.schema.json").validate(doc)
+
+
+def validate_annotations(doc: dict[str, Any]) -> None:
+    """Validate a doc against annotations.v1. Raises jsonschema.ValidationError."""
+    _validator("annotations.v1.schema.json").validate(doc)
+
+
 def load_sample(name: str) -> dict[str, Any]:
     """Load and parse a JSON sample from ``contracts_dir()/samples/name``."""
     return _load_json(contracts_dir() / "samples" / name)

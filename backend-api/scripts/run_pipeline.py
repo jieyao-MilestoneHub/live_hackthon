@@ -25,12 +25,20 @@ from pathlib import Path
 # Make backend-api/ importable when run as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from analysis.chatlog import clean_chatlog  # noqa: E402
 from analysis.validate import load_sample  # noqa: E402
 from app.repository import get_repository  # noqa: E402
 from app.settings import get_settings  # noqa: E402
 from app.state import ProjectState, assert_project_transition  # noqa: E402
 from app.storage import get_storage  # noqa: E402
-from workers import analysis_worker, composer_worker, creative_worker, render_worker  # noqa: E402
+from workers import (  # noqa: E402
+    analysis_worker,
+    annotation_worker,
+    chat_analysis_worker,
+    composer_worker,
+    creative_worker,
+    render_worker,
+)
 
 # Path from CREATED to ANALYZING that the real S3-event pipeline would drive.
 _TO_ANALYZING = [ProjectState.UPLOAD_PENDING, ProjectState.UPLOADING, ProjectState.ANALYZING]
@@ -46,6 +54,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run the analysis+compose pipeline locally.")
     parser.add_argument("--project-id", default=None, help="existing project id (default: create one)")
     parser.add_argument("--transcript", default=None, help="path to a transcript.v1 JSON (default: sample)")
+    parser.add_argument(
+        "--chat",
+        default=None,
+        help="path to a chat-room log CSV; runs the chat-first analysis instead of the transcript path",
+    )
+    parser.add_argument(
+        "--video-start-epoch-ms",
+        type=int,
+        default=None,
+        help="影片 0:00 的 epoch 毫秒（chat 模式）；省略則退回聊天相對時間",
+    )
+    parser.add_argument(
+        "--source-duration-ms",
+        type=int,
+        default=None,
+        help="影片長度毫秒（chat 模式，可選）",
+    )
     parser.add_argument("--target-ms", type=int, default=30000, help="target duration ms (new project)")
     parser.add_argument("--render", action="store_true", help="also submit a render (Creative Planning -> QUEUED)")
     args = parser.parse_args()
@@ -69,7 +94,18 @@ def main() -> int:
         })
         print(f"[pipeline] created project {project_id} (target={args.target_ms}ms)")
 
-    if args.transcript:
+    chatlog = None
+    if args.chat:
+        chatlog = clean_chatlog(
+            Path(args.chat),
+            project_id,
+            source={"bucket": settings.raw_bucket, "key": settings.chat_key("demo", project_id)},
+        )
+        print(
+            f"[pipeline] chat clean -> {len(chatlog['messages'])} msgs "
+            f"({sum(1 for m in chatlog['messages'] if m['is_spam'])} spam-tagged)"
+        )
+    elif args.transcript:
         transcript = json.loads(Path(args.transcript).read_text(encoding="utf-8"))
     else:
         transcript = load_sample("transcript.sample.json")
@@ -79,8 +115,21 @@ def main() -> int:
         _advance(repo, project_id, state)
     print("[pipeline] status -> ANALYZING")
 
-    highlights = analysis_worker.run(repo, project_id, transcript)
-    print(f"[pipeline] analysis -> {len(highlights['highlights'])} highlights, status -> COMPOSING")
+    if chatlog is not None:
+        highlights = chat_analysis_worker.run(
+            repo,
+            project_id,
+            chatlog,
+            video_start_epoch_ms=args.video_start_epoch_ms,
+            source_duration_ms=args.source_duration_ms,
+        )
+        print(
+            f"[pipeline] chat analysis -> {len(highlights['highlights'])} highlights "
+            f"({highlights['analysis_version']}), status -> COMPOSING"
+        )
+    else:
+        highlights = analysis_worker.run(repo, project_id, transcript)
+        print(f"[pipeline] analysis -> {len(highlights['highlights'])} highlights, status -> COMPOSING")
 
     timeline = composer_worker.run(repo, project_id)
     print(
@@ -88,6 +137,16 @@ def main() -> int:
         f"{len(timeline['clips'])} clips, actual={timeline['actual_duration_ms']}ms "
         f"(target={timeline['target_duration_ms']}ms), status -> READY_TO_EDIT"
     )
+
+    if chatlog is not None:
+        # 階段 7–8：結構化標註（chat 流程 demo）。先落地 chatlog 供 chat_highlights 取留言。
+        storage = get_storage()
+        storage.put_json(settings.work_bucket, settings.chatlog_key("demo", project_id), chatlog)
+        annotations = annotation_worker.run(repo, storage, settings, project_id)
+        print(
+            f"[pipeline] annotate -> {len(annotations['annotations'])} annotated highlights "
+            f"(5 維度 + beats each)"
+        )
 
     if args.render:
         storage = get_storage()
