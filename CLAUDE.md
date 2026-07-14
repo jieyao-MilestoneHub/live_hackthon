@@ -1,6 +1,6 @@
 # CLAUDE.md — 浪 LIVE 專案規範（所有 session 一律遵守）
 
-> AI 直播高光偵測 + 剪輯短片編輯器。權威願景見 `docs/demand.md`。
+> AI 直播高光偵測 + 剪輯短片編輯器。架構見 `docs/live_hackathon_arch.png`；里程碑交接見 `docs/M2-handoff.md`。
 
 ## 分支模型：只走 `main`
 - **只在 `main` branch 上工作**。不開 feature 分支、不用 `develop`、不採 worktree-per-feature 模型。

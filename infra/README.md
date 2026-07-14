@@ -2,7 +2,7 @@
 
 Terraform for the 浪 LIVE walking skeleton (AI livestream highlight clipping).
 This scaffolds the `dev` environment; the full target architecture lives in
-[`docs/aws-infra.md`](../docs/aws-infra.md).
+the [cloud architecture diagram](../docs/live_hackathon_arch.png) and [`docs/M2-handoff.md`](../docs/M2-handoff.md).
 
 - **Region:** `us-east-1` (N. Virginia)
 - **State:** **remote** — S3 `lang-live-tfstate-979287128595` (key `dev/terraform.tfstate`,
