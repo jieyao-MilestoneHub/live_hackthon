@@ -39,6 +39,7 @@ def _timeline_sk(version: int) -> str:
 
 
 _RENDER_SK_PREFIX = "RENDER#"
+_ARTIFACT_SK_PREFIX = "ARTIFACT#"
 _POINTER_SK = "POINTER"
 
 
@@ -48,6 +49,14 @@ def _render_pk(render_id: str) -> str:
 
 def _render_sk(render_id: str) -> str:
     return f"{_RENDER_SK_PREFIX}{render_id}"
+
+
+def _artifact_pk(artifact_id: str) -> str:
+    return f"ARTIFACT#{artifact_id}"
+
+
+def _artifact_sk(artifact_id: str) -> str:
+    return f"{_ARTIFACT_SK_PREFIX}{artifact_id}"
 
 
 class ProjectRepository(abc.ABC):
@@ -107,6 +116,18 @@ class ProjectRepository(abc.ABC):
     def update_render(self, project_id: str, render_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         """Apply ``patch`` to a Render item. Raises ``KeyError`` if absent."""
 
+    @abc.abstractmethod
+    def put_artifact(self, project_id: str, artifact: dict[str, Any]) -> None:
+        """Persist an Artifact item (SK ``ARTIFACT#{artifact_id}``) + a pointer."""
+
+    @abc.abstractmethod
+    def get_artifact(self, project_id: str, artifact_id: str) -> dict[str, Any] | None:
+        """Return the Artifact item, or ``None`` if absent."""
+
+    @abc.abstractmethod
+    def get_artifact_by_id(self, artifact_id: str) -> dict[str, Any] | None:
+        """Resolve an artifact_id (via pointer) to its Artifact item, or ``None``."""
+
 
 class InMemoryProjectRepository(ProjectRepository):
     """Process-local store for offline dev / tests."""
@@ -117,6 +138,8 @@ class InMemoryProjectRepository(ProjectRepository):
         self._timelines: dict[str, dict[int, dict[str, Any]]] = {}
         self._renders: dict[tuple[str, str], dict[str, Any]] = {}
         self._render_pointers: dict[str, str] = {}
+        self._artifacts: dict[tuple[str, str], dict[str, Any]] = {}
+        self._artifact_pointers: dict[str, str] = {}
 
     def create_project(self, item: dict[str, Any]) -> dict[str, Any]:
         project_id = item["project_id"]
@@ -182,6 +205,19 @@ class InMemoryProjectRepository(ProjectRepository):
         current.update(patch)
         current["updated_at"] = _now_iso()
         return copy.deepcopy(current)
+
+    def put_artifact(self, project_id: str, artifact: dict[str, Any]) -> None:
+        artifact_id = artifact["artifact_id"]
+        self._artifacts[(project_id, artifact_id)] = copy.deepcopy(artifact)
+        self._artifact_pointers[artifact_id] = project_id
+
+    def get_artifact(self, project_id: str, artifact_id: str) -> dict[str, Any] | None:
+        found = self._artifacts.get((project_id, artifact_id))
+        return copy.deepcopy(found) if found is not None else None
+
+    def get_artifact_by_id(self, artifact_id: str) -> dict[str, Any] | None:
+        project_id = self._artifact_pointers.get(artifact_id)
+        return self.get_artifact(project_id, artifact_id) if project_id else None
 
 
 def _coerce_numbers(value: Any) -> Any:
@@ -395,6 +431,32 @@ class DynamoProjectRepository(ProjectRepository):
                 raise KeyError(f"render {render_id} not found") from exc
             raise
         return self._strip_keys(resp["Attributes"])
+
+    def put_artifact(self, project_id: str, artifact: dict[str, Any]) -> None:
+        artifact_id = artifact["artifact_id"]
+        record = {
+            _PK: _project_pk(project_id),
+            _SK: _artifact_sk(artifact_id),
+            **{k: v for k, v in artifact.items() if v is not None},
+        }
+        self._table.put_item(Item=_to_dynamo(record))
+        self._table.put_item(
+            Item={_PK: _artifact_pk(artifact_id), _SK: _POINTER_SK, "project_id": project_id}
+        )
+
+    def get_artifact(self, project_id: str, artifact_id: str) -> dict[str, Any] | None:
+        resp = self._table.get_item(
+            Key={_PK: _project_pk(project_id), _SK: _artifact_sk(artifact_id)}
+        )
+        item = resp.get("Item")
+        return self._strip_keys(item) if item else None
+
+    def get_artifact_by_id(self, artifact_id: str) -> dict[str, Any] | None:
+        resp = self._table.get_item(Key={_PK: _artifact_pk(artifact_id), _SK: _POINTER_SK})
+        pointer = resp.get("Item")
+        if not pointer:
+            return None
+        return self.get_artifact(pointer["project_id"], artifact_id)
 
 
 @lru_cache(maxsize=1)

@@ -29,6 +29,8 @@ __all__ = [
     "RenderCreate",
     "RenderCreated",
     "Render",
+    "Artifact",
+    "DownloadUrl",
 ]
 
 
@@ -186,3 +188,26 @@ class Render(BaseModel):
     created_at: str | None = None
     started_at: str | None = None
     completed_at: str | None = None
+
+
+class Artifact(BaseModel):
+    """artifact.v1 projection (final render manifest)."""
+
+    artifact_id: str
+    project_id: str
+    render_id: str
+    timeline_version: int | None = None
+    status: str
+    duration_ms: int | None = None
+    aspect_ratio: str | None = None
+    resolution: dict | None = None
+    size_bytes: int | None = None
+    files: dict = Field(default_factory=dict)
+    created_at: str | None = None
+
+
+class DownloadUrl(BaseModel):
+    """GET /artifacts/{artifact_id}/download response."""
+
+    url: str
+    expires_in_sec: int

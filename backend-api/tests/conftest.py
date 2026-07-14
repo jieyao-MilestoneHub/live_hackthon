@@ -114,3 +114,18 @@ def ready_render(ready_project):
 
     render = creative_worker.submit_render(get_repository(), get_storage(), ready_project)
     return ready_project, render["render_id"]
+
+
+@pytest.fixture()
+def published_artifact(ready_render):
+    """A fully rendered artifact (Project ARTIFACT_READY, Render SUCCEEDED).
+
+    Returns (project_id, render_id, artifact_id).
+    """
+    from app.repository import get_repository
+    from app.storage import get_storage
+    from workers import render_worker
+
+    project_id, render_id = ready_render
+    artifact = render_worker.run(get_repository(), get_storage(), project_id, render_id)
+    return project_id, render_id, artifact["artifact_id"]

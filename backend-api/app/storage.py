@@ -50,6 +50,10 @@ class Storage(abc.ABC):
     def get_json(self, bucket: str, key: str) -> dict[str, Any]:
         """Read+parse the JSON object at ``bucket/key``. Raises ``KeyError`` if absent."""
 
+    @abc.abstractmethod
+    def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
+        """Write raw bytes to ``bucket/key``. Returns the key."""
+
 
 class StubStorage(Storage):
     """No-AWS stub: fabricates local placeholder URLs, keeps objects in-process."""
@@ -57,6 +61,7 @@ class StubStorage(Storage):
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._objects: dict[tuple[str, str], str] = {}
+        self._blobs: dict[tuple[str, str], bytes] = {}
 
     def create_upload_session(
         self, key: str, part_count: int, content_type: str | None = None
@@ -89,6 +94,10 @@ class StubStorage(Storage):
             return json.loads(self._objects[(bucket, key)])
         except KeyError:
             raise KeyError(f"no object at {bucket}/{key}") from None
+
+    def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
+        self._blobs[(bucket, key)] = data
+        return key
 
 
 class S3Storage(Storage):
@@ -150,6 +159,10 @@ class S3Storage(Storage):
                 raise KeyError(f"no object at {bucket}/{key}") from exc
             raise
         return json.loads(resp["Body"].read().decode("utf-8"))
+
+    def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
+        self._client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+        return key
 
 
 @lru_cache(maxsize=1)

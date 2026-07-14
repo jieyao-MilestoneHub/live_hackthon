@@ -30,7 +30,7 @@ from app.repository import get_repository  # noqa: E402
 from app.settings import get_settings  # noqa: E402
 from app.state import ProjectState, assert_project_transition  # noqa: E402
 from app.storage import get_storage  # noqa: E402
-from workers import analysis_worker, composer_worker, creative_worker  # noqa: E402
+from workers import analysis_worker, composer_worker, creative_worker, render_worker  # noqa: E402
 
 # Path from CREATED to ANALYZING that the real S3-event pipeline would drive.
 _TO_ANALYZING = [ProjectState.UPLOAD_PENDING, ProjectState.UPLOADING, ProjectState.ANALYZING]
@@ -90,11 +90,17 @@ def main() -> int:
     )
 
     if args.render:
-        render = creative_worker.submit_render(repo, get_storage(), project_id)
+        storage = get_storage()
+        render = creative_worker.submit_render(repo, storage, project_id)
         print(
-            f"[pipeline] render   -> {render['render_id']}, status -> {render['status']}, "
-            f"effect_seed={render['effect_seed']}, timeline v{render['timeline_version']}, "
-            f"render_spec_key={render.get('render_spec_key')}"
+            f"[pipeline] plan     -> {render['render_id']}, status -> {render['status']}, "
+            f"effect_seed={render['effect_seed']}, timeline v{render['timeline_version']}"
+        )
+        artifact = render_worker.run(repo, storage, project_id, render["render_id"])
+        print(
+            f"[pipeline] render   -> artifact {artifact['artifact_id']}, status -> READY, "
+            f"{artifact['resolution']['width']}x{artifact['resolution']['height']}, "
+            f"video_key={artifact['files']['video_key']}, status -> SUCCEEDED / ARTIFACT_READY"
         )
 
     print(f"[pipeline] DONE. project_id = {project_id}")

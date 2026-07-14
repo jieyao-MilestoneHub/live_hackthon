@@ -77,11 +77,6 @@ def test_unknown_project_404(client) -> None:
     )
 
 
-def test_unimplemented_endpoints_return_501(client) -> None:
-    # M3 wires renders; only artifact download remains a stub (M4).
-    assert client.get("/artifacts/artifact-xyz/download").status_code == 501
-
-
 # --- M2 editor loop -------------------------------------------------------
 
 
@@ -168,7 +163,23 @@ def test_get_render_unknown_404(client) -> None:
     assert client.get("/renders/render-does-not-exist").status_code == 404
 
 
-def test_artifact_download_still_501(client, ready_render) -> None:
-    _, render_id = ready_render
-    artifact_id = client.get(f"/renders/{render_id}").json()["artifact_id"]
-    assert client.get(f"/artifacts/{artifact_id}/download").status_code == 501
+# --- M4 render worker + download -----------------------------------------
+
+
+def test_render_to_download(client, published_artifact) -> None:
+    project_id, render_id, artifact_id = published_artifact
+    # Render finished, Project ready.
+    render = client.get(f"/renders/{render_id}").json()
+    assert render["status"] == "SUCCEEDED"
+    assert render["artifact_id"] == artifact_id
+    assert client.get(f"/projects/{project_id}").json()["status"] == "ARTIFACT_READY"
+    # Download URL issued.
+    d = client.get(f"/artifacts/{artifact_id}/download")
+    assert d.status_code == 200
+    body = d.json()
+    assert body["url"]
+    assert body["expires_in_sec"] == 900
+
+
+def test_download_unknown_artifact_404(client) -> None:
+    assert client.get("/artifacts/artifact-does-not-exist/download").status_code == 404

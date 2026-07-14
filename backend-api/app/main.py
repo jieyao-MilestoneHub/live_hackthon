@@ -22,6 +22,7 @@ from app.auth import Principal, current_principal
 from app.repository import ProjectRepository, get_repository
 from app.schemas import (
     ComposeRequest,
+    DownloadUrl,
     Highlight,
     HighlightList,
     Project,
@@ -143,13 +144,6 @@ def get_project(
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
     return Project(**project)
-
-
-# --- Contract-declared endpoints not yet implemented (see contracts/openapi.yaml) ---
-# They exist so the API surface matches the contract; filled in by M2/M3/M4.
-
-def _not_implemented(what: str) -> HTTPException:
-    return HTTPException(status_code=501, detail=f"{what} not implemented yet")
 
 
 @app.get("/projects/{id}/highlights", response_model=HighlightList)
@@ -285,6 +279,15 @@ def get_render(
     return Render(**render)
 
 
-@app.get("/artifacts/{artifact_id}/download")
-def get_artifact_download_url(artifact_id: str) -> dict:  # noqa: ARG001
-    raise _not_implemented("artifact download (M4)")
+@app.get("/artifacts/{artifact_id}/download", response_model=DownloadUrl)
+def get_artifact_download_url(
+    artifact_id: str,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> DownloadUrl:
+    artifact = repo.get_artifact_by_id(artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    settings = get_settings()
+    url = storage.presigned_get(settings.output_bucket, artifact["video_key"])
+    return DownloadUrl(url=url, expires_in_sec=settings.presign_expiry_sec)
