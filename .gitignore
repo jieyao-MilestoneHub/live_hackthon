@@ -1,0 +1,51 @@
+# === Node / Next.js ===
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# === Terraform ===
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+override.tf
+override.tf.json
+
+# === Secrets / credentials (NEVER commit) ===
+*.pem
+*.key
+aws.json
+credentials
+.aws/
+
+# === Build / artifacts ===
+dist/
+build/
+*.log
+tmp/
+.DS_Store
+Thumbs.db
+
+# === Editor ===
+.vscode/
+.idea/
+*.swp

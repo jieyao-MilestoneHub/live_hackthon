@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/highlights.v1.schema.json",
+  "title": "highlights.v1",
+  "description": "高光分析輸出（分析模組 → 系統裁切的介面契約）。對應 issue #6。",
+  "type": "object",
+  "required": ["schema_version", "job_id", "analysis_version", "parameters", "highlights"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "highlights.v1" },
+    "job_id": { "type": "string" },
+    "analysis_version": { "type": "string", "description": "分析模型/規則版本，如 highlight-rule-1.0.0" },
+    "parameters": {
+      "type": "object",
+      "required": ["max_clips", "min_duration_sec", "max_duration_sec"],
+      "additionalProperties": true,
+      "properties": {
+        "max_clips": { "type": "integer", "minimum": 1 },
+        "min_duration_sec": { "type": "number", "minimum": 0 },
+        "max_duration_sec": { "type": "number", "minimum": 0 },
+        "padding_before_sec": { "type": "number", "minimum": 0, "default": 0 },
+        "padding_after_sec": { "type": "number", "minimum": 0, "default": 0 }
+      }
+    },
+    "highlights": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/highlight" }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "highlight": {
+      "type": "object",
+      "required": ["clip_id", "start_sec", "end_sec", "score"],
+      "additionalProperties": false,
+      "properties": {
+        "clip_id": { "type": "string", "description": "job 內唯一" },
+        "start_sec": { "type": "number", "minimum": 0 },
+        "end_sec": { "type": "number", "minimum": 0 },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reason": { "type": "string" },
+        "title": { "type": "string" },
+        "source_segment_ids": { "type": "array", "items": { "type": "string" } },
+        "render_profile": { "type": "string", "description": "如 vertical-1080x1920" }
+      }
+    }
+  }
+}

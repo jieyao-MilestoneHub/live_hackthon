@@ -1,0 +1,6 @@
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pydantic>=2.7
+boto3>=1.34
+jsonschema>=4.22
+imageio-ffmpeg>=0.5.1

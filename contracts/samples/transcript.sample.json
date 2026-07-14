@@ -1,0 +1,94 @@
+{
+  "schema_version": "transcript.v1",
+  "job_id": "job_sample_0001",
+  "language_code": "zh-TW",
+  "duration_sec": 240.0,
+  "source": {
+    "bucket": "video-raw-dev",
+    "key": "tenant=demo/job=job_sample_0001/input/source.mp4",
+    "version_id": "sample"
+  },
+  "segments": [
+    {
+      "segment_id": "seg_0001",
+      "start_sec": 0.0,
+      "end_sec": 12.5,
+      "speaker": "spk_0",
+      "text": "大家好，歡迎來到今天的直播，我們先簡單暖場一下。",
+      "confidence": 0.96
+    },
+    {
+      "segment_id": "seg_0002",
+      "start_sec": 12.5,
+      "end_sec": 30.0,
+      "speaker": "spk_0",
+      "text": "今天會帶大家看幾個東西，不過一開始我們慢慢聊天就好。",
+      "confidence": 0.95
+    },
+    {
+      "segment_id": "seg_0003",
+      "start_sec": 45.0,
+      "end_sec": 62.0,
+      "speaker": "spk_0",
+      "text": "哇這個真的太扯了！各位有看到嗎？這波操作也太神了吧，我完全沒想到會這樣！",
+      "confidence": 0.94
+    },
+    {
+      "segment_id": "seg_0004",
+      "start_sec": 62.0,
+      "end_sec": 78.0,
+      "speaker": "spk_0",
+      "text": "天啊我起雞皮疙瘩了，這絕對是今天最精彩的一段，太誇張了！",
+      "confidence": 0.93
+    },
+    {
+      "segment_id": "seg_0005",
+      "start_sec": 78.0,
+      "end_sec": 95.0,
+      "speaker": "spk_0",
+      "text": "好我們冷靜一下，喝口水，剛剛那個真的很扯。",
+      "confidence": 0.95
+    },
+    {
+      "segment_id": "seg_0006",
+      "start_sec": 120.0,
+      "end_sec": 133.0,
+      "speaker": "spk_0",
+      "text": "接下來這題有點難，讓我想一下要怎麼處理比較好。",
+      "confidence": 0.96
+    },
+    {
+      "segment_id": "seg_0007",
+      "start_sec": 150.0,
+      "end_sec": 172.0,
+      "speaker": "spk_0",
+      "text": "欸欸欸來了來了！就是現在！大家快看，這個超級厲害，我要衝了啊啊啊！",
+      "confidence": 0.92
+    },
+    {
+      "segment_id": "seg_0008",
+      "start_sec": 172.0,
+      "end_sec": 188.0,
+      "speaker": "spk_0",
+      "text": "成功了！我們做到了！太爽了吧這個，感謝大家的應援！",
+      "confidence": 0.93
+    },
+    {
+      "segment_id": "seg_0009",
+      "start_sec": 200.0,
+      "end_sec": 220.0,
+      "speaker": "spk_0",
+      "text": "那今天差不多到這邊，謝謝大家收看，記得追蹤訂閱喔。",
+      "confidence": 0.96
+    },
+    {
+      "segment_id": "seg_0010",
+      "start_sec": 220.0,
+      "end_sec": 240.0,
+      "speaker": "spk_0",
+      "text": "我們下次直播見，掰掰。",
+      "confidence": 0.97
+    }
+  ],
+  "created_at": "2026-07-14T10:00:00Z"
+}

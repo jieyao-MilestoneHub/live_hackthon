@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/transcript.v1.schema.json",
+  "title": "transcript.v1",
+  "description": "正規化逐字稿格式（S4 Transcribe 輸出後正規化；分析模組的輸入契約）。對應 issue #4。",
+  "type": "object",
+  "required": ["schema_version", "job_id", "language_code", "duration_sec", "segments"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "transcript.v1" },
+    "job_id": { "type": "string" },
+    "language_code": { "type": "string", "description": "BCP-47，如 zh-TW" },
+    "duration_sec": { "type": "number", "minimum": 0 },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "bucket": { "type": "string" },
+        "key": { "type": "string" },
+        "version_id": { "type": "string" }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/segment" }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "segment": {
+      "type": "object",
+      "required": ["segment_id", "start_sec", "end_sec", "text"],
+      "additionalProperties": false,
+      "properties": {
+        "segment_id": { "type": "string" },
+        "start_sec": { "type": "number", "minimum": 0 },
+        "end_sec": { "type": "number", "minimum": 0 },
+        "speaker": { "type": ["string", "null"] },
+        "text": { "type": "string" },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "text"],
+            "additionalProperties": false,
+            "properties": {
+              "type": { "type": "string", "enum": ["pronunciation", "punctuation"] },
+              "start_sec": { "type": ["number", "null"], "minimum": 0 },
+              "end_sec": { "type": ["number", "null"], "minimum": 0 },
+              "text": { "type": "string" },
+              "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

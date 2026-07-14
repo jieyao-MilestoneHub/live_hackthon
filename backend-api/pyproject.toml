@@ -1,0 +1,10 @@
+[project]
+name = "live-hackthon-backend"
+version = "0.1.0"
+description = "浪 LIVE Job API + 高光分析模組"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,144 @@
+openapi: 3.0.3
+info:
+  title: 浪 LIVE Job API
+  version: 0.1.0
+  description: >
+    影片高光剪輯 Job API（前後端共用契約）。M0 走路骨架先提供 stub，
+    團隊依此契約在 backend-api / frontend-web 續建。
+servers:
+  - url: http://localhost:8080
+    description: 本機
+  - url: https://{apprunner-id}.ap-northeast-1.awsapprunner.com
+    description: AWS dev（App Runner）
+paths:
+  /health:
+    get:
+      summary: 健康檢查
+      operationId: health
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  version: { type: string }
+  /jobs:
+    post:
+      summary: 建立影片處理工作，回傳 job_id 與上傳資訊
+      operationId: createJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JobCreate" }
+      responses:
+        "201":
+          description: 已建立
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobCreated" }
+  /jobs/{job_id}:
+    get:
+      summary: 查詢工作狀態與結果
+      operationId: getJob
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JobStatus" }
+        "404": { description: 不存在 }
+  /jobs/{job_id}/artifacts/{clip_id}/download:
+    get:
+      summary: 取得短片下載連結（MVP：presigned URL；企業版：CloudFront signed URL）
+      operationId: getDownloadUrl
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: clip_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, format: uri }
+                  expires_in_sec: { type: integer }
+        "404": { description: 不存在 }
+components:
+  schemas:
+    JobCreate:
+      type: object
+      required: [filename]
+      properties:
+        filename: { type: string, example: stream.mp4 }
+        content_type: { type: string, example: video/mp4 }
+        tenant_id: { type: string }
+    JobCreated:
+      type: object
+      required: [job_id, status]
+      properties:
+        job_id: { type: string }
+        status: { $ref: "#/components/schemas/JobState" }
+        upload:
+          type: object
+          description: S3 presigned multipart 上傳資訊（本機 stub 可回本地上傳端點）
+          properties:
+            method: { type: string, example: PUT }
+            url: { type: string, format: uri }
+            key: { type: string }
+    JobStatus:
+      type: object
+      required: [job_id, status]
+      properties:
+        job_id: { type: string }
+        status: { $ref: "#/components/schemas/JobState" }
+        current_stage: { type: string }
+        progress: { type: integer, minimum: 0, maximum: 100 }
+        highlights:
+          type: array
+          description: 完成後填入（對應 highlights.v1 的 highlight 項）
+          items: { $ref: "#/components/schemas/Clip" }
+        error_code: { type: string }
+        error_message: { type: string }
+    Clip:
+      type: object
+      required: [clip_id, start_sec, end_sec]
+      properties:
+        clip_id: { type: string }
+        start_sec: { type: number }
+        end_sec: { type: number }
+        score: { type: number }
+        reason: { type: string }
+        title: { type: string }
+        download_ready: { type: boolean }
+    JobState:
+      type: string
+      enum:
+        - CREATED
+        - UPLOAD_PENDING
+        - UPLOADED
+        - QUEUED
+        - VALIDATING
+        - TRANSCRIBING
+        - ANALYZING
+        - RENDERING
+        - FINALIZING
+        - SUCCEEDED
+        - FAILED
+        - CANCELLED
