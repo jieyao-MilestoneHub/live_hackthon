@@ -2,83 +2,149 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createJob } from '@/lib/api';
+import { createProject } from '@/lib/api';
+import HighlightWave from '@/components/HighlightWave';
 
-export default function UploadPage() {
+const MAX_TARGET_SEC = 60;
+const DEFAULT_TARGET_SEC = 30;
+
+const RULER = ['0:00', '1:30', '3:00', '4:00', '5:30'];
+
+const STEPS = [
+  { t: '上傳原始影片', d: '瀏覽器以 presigned URL 直傳直播錄影至 S3，不經過伺服器。' },
+  { t: 'AI 分析高光並自動組片', d: '偵測情緒高峰，Composer 依目標秒數組出初始時間軸。' },
+  { t: '微調時間軸，一鍵渲染', d: '排序、鎖定、選字幕與特效比例，送出即輸出成品短片。' },
+];
+
+export default function LandingPage() {
   const router = useRouter();
-  const [file, setFile] = useState<File | null>(null);
+  const [title, setTitle] = useState('');
+  const [targetSec, setTargetSec] = useState(DEFAULT_TARGET_SEC);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const on = (n: number) => `reveal stagger-${n}`;
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file) {
-      setError('請先選擇一個影片檔案。');
+    if (targetSec < 1 || targetSec > MAX_TARGET_SEC) {
+      setError(`目標秒數需介於 1–${MAX_TARGET_SEC} 秒。`);
       return;
     }
     setError(null);
     setSubmitting(true);
     try {
-      const created = await createJob({
-        filename: file.name,
-        content_type: file.type || 'video/mp4',
+      const created = await createProject({
+        title: title.trim() || undefined,
+        target_duration_ms: Math.round(targetSec * 1000),
       });
-
-      // TODO(team, #16): 走路骨架僅建立 job 後直接導向狀態頁。
-      // 後續：用 created.upload 的 presigned URL 執行真正的 S3 multipart 上傳，
-      // 將 file 的 bytes 以 PUT 上傳到 created.upload.url（method/key 依後端回傳）。
-      // 上傳完成後再通知後端開始處理（依契約補上對應端點）。
-
-      router.push(`/jobs?id=${encodeURIComponent(created.job_id)}`);
+      router.push(`/projects?id=${encodeURIComponent(created.project_id)}`);
     } catch (err) {
       console.error(err);
-      setError('建立工作失敗，請稍後再試。');
+      setError('建立專案失敗，請稍後再試。');
       setSubmitting(false);
     }
   }
 
   return (
-    <main>
-      <div className="card">
-        <h1>上傳直播影片</h1>
-        <p className="subtitle" style={{ marginBottom: 20 }}>
-          選擇一段直播錄影，系統會自動分析並剪出精彩高光短片。
+    <main className="shell page">
+      <section className="hero">
+        <p className={`eyebrow ${on(1)}`}>AI HIGHLIGHT EDITOR · 直播高光剪輯</p>
+        <h1 className={`hero__title cjk ${on(2)}`}>
+          把<span className="grad">最猛的那幾秒</span>，
+          <br />
+          剪成短片。
+        </h1>
+        <p className={`lead ${on(3)}`} style={{ maxWidth: 560 }}>
+          上傳直播錄影，AI 找出情緒高峰、自動組出 60 秒內的精華，時間軸交給你微調。
         </p>
-        <form onSubmit={handleSubmit}>
-          <label htmlFor="video">影片檔案（mp4 等）</label>
-          <input
-            id="video"
-            type="file"
-            accept="video/*"
-            onChange={(e) => {
-              setFile(e.target.files?.[0] ?? null);
-              setError(null);
-            }}
-          />
 
-          {file && (
-            <p className="hint">
-              已選擇：<span className="mono">{file.name}</span>
-              {file.size > 0 && (
-                <> · {(file.size / (1024 * 1024)).toFixed(1)} MB</>
-              )}
-            </p>
-          )}
-
-          <div className="row spacer">
-            <button type="submit" disabled={submitting || !file}>
-              {submitting ? '建立工作中…' : '建立高光剪輯工作'}
-            </button>
+        <div className={`${on(4)}`} style={{ marginTop: 32 }}>
+          <HighlightWave mode="draw" height={140} />
+          <div
+            className="mono muted"
+            style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, marginTop: 4 }}
+          >
+            {RULER.map((r) => (
+              <span key={r}>{r}</span>
+            ))}
           </div>
+        </div>
+      </section>
 
-          {error && <p className="error">{error}</p>}
-        </form>
+      <div className="hero__grid">
+        {/* Create console */}
+        <div className={`panel ${on(3)}`}>
+          <div className="panel__head">
+            <span className="panel__title">開始一個新專案</span>
+            <span className="panel__eyebrow">NEW PROJECT</span>
+          </div>
+          <form onSubmit={handleSubmit}>
+            <div className="field">
+              <label htmlFor="title">專案標題（選填）</label>
+              <input
+                id="title"
+                className="input"
+                type="text"
+                placeholder="例如：巔峰對決精華"
+                value={title}
+                maxLength={80}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </div>
 
-        <p className="hint">
-          走路骨架階段：僅建立 job 後導向狀態頁，尚未執行真正的 S3
-          上傳（見程式碼 TODO）。若後端未啟動，會自動使用本地 mock
-          資料以便預覽 UI。
-        </p>
+            <div className="field">
+              <label htmlFor="target">目標秒數（1–{MAX_TARGET_SEC} 秒）</label>
+              <div className="row" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                <input
+                  id="target"
+                  type="range"
+                  min={1}
+                  max={MAX_TARGET_SEC}
+                  value={targetSec}
+                  onChange={(e) => setTargetSec(Number(e.target.value))}
+                  style={{ flex: 1 }}
+                />
+                <input
+                  className="input num"
+                  type="number"
+                  min={1}
+                  max={MAX_TARGET_SEC}
+                  value={targetSec}
+                  onChange={(e) => setTargetSec(Number(e.target.value))}
+                  aria-label="目標秒數"
+                />
+              </div>
+              <p className="hint">
+                = <span className="mono">{Math.round(targetSec * 1000)}</span> ms（契約以毫秒為單位）
+              </p>
+            </div>
+
+            <button type="submit" className="btn btn--lg btn--block" disabled={submitting}>
+              {submitting ? '建立中…' : '建立並開始上傳 ▸'}
+            </button>
+            {error && <p className="error">{error}</p>}
+          </form>
+        </div>
+
+        {/* How it works — a real 3-step sequence */}
+        <div className={`panel ${on(4)}`}>
+          <div className="panel__head">
+            <span className="panel__title">如何運作</span>
+            <span className="panel__eyebrow">HOW IT WORKS</span>
+          </div>
+          <div className="steps">
+            {STEPS.map((s, i) => (
+              <div className="step" key={s.t}>
+                <span className="step__num">{i + 1}</span>
+                <div className="step__body">
+                  <h3 className="cjk">{s.t}</h3>
+                  <p>{s.d}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </main>
   );

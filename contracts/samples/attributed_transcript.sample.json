@@ -1,0 +1,120 @@
+{
+  "schema_version": "attributed_transcript.v1",
+  "project_id": "project-123",
+  "language_code": "zh-TW",
+  "source_transcript_version": "sample",
+  "attribution_version": "attribution-fusion-1.0.0",
+  "participants": [
+    {
+      "person_id": "person_001",
+      "display_name": "主播 A",
+      "role": "protagonist",
+      "identity_source": "rekognition_collection"
+    },
+    {
+      "person_id": "person_002",
+      "display_name": "來賓 B",
+      "role": "guest",
+      "identity_source": "user_label"
+    }
+  ],
+  "utterances": [
+    {
+      "utterance_id": "utt_0001",
+      "start_ms": 0,
+      "end_ms": 12500,
+      "text": "大家好，歡迎來到今天的直播，我們先簡單暖場一下。",
+      "speaker_cluster_id": "spk_0",
+      "person_id": "person_001",
+      "display_name": "主播 A",
+      "role": "protagonist",
+      "source_segment_ids": ["seg_0001"],
+      "attribution": {
+        "status": "confirmed",
+        "method": "face_search_and_lip_sync",
+        "confidence": 0.94,
+        "face_track_id": "track_04",
+        "face_similarity": 0.98,
+        "lip_sync_confidence": 0.91,
+        "visible_ratio": 0.96,
+        "speaker_cluster_consistency": 0.93,
+        "evidence": { "face_match": 0.98, "lip_sync": 0.91, "visible_ratio": 0.96 }
+      },
+      "corrected_by": null,
+      "corrected_at": null
+    },
+    {
+      "utterance_id": "utt_0002",
+      "start_ms": 45000,
+      "end_ms": 62000,
+      "text": "哇這個真的太扯了！各位有看到嗎？這波操作也太神了吧，我完全沒想到會這樣！",
+      "speaker_cluster_id": "spk_0",
+      "person_id": "person_001",
+      "display_name": "主播 A",
+      "role": "protagonist",
+      "source_segment_ids": ["seg_0003"],
+      "attribution": {
+        "status": "off_screen",
+        "method": "speaker_cluster_propagation",
+        "confidence": 0.82,
+        "face_track_id": null,
+        "face_similarity": null,
+        "lip_sync_confidence": null,
+        "visible_ratio": 0.0,
+        "speaker_cluster_consistency": 0.93,
+        "evidence": { "propagated_from": "spk_0", "reason": "主角說話但畫面切到商品" }
+      },
+      "corrected_by": null,
+      "corrected_at": null
+    },
+    {
+      "utterance_id": "utt_0003",
+      "start_ms": 100000,
+      "end_ms": 108000,
+      "text": "那可以請你介紹一下這個功能嗎？",
+      "speaker_cluster_id": "spk_1",
+      "person_id": null,
+      "display_name": "未知說話者",
+      "role": null,
+      "source_segment_ids": ["seg_0006"],
+      "attribution": {
+        "status": "needs_review",
+        "method": "insufficient_evidence",
+        "confidence": 0.48,
+        "face_track_id": null,
+        "face_similarity": null,
+        "lip_sync_confidence": null,
+        "visible_ratio": null,
+        "speaker_cluster_consistency": null,
+        "evidence": { "note": "臉部信心低，交 Nova/編輯器複核" }
+      },
+      "corrected_by": null,
+      "corrected_at": null
+    },
+    {
+      "utterance_id": "utt_0004",
+      "start_ms": 108000,
+      "end_ms": 118000,
+      "text": "這個功能主要可以自動產生短影片。",
+      "speaker_cluster_id": "spk_1",
+      "person_id": "person_002",
+      "display_name": "來賓 B",
+      "role": "guest",
+      "source_segment_ids": ["seg_0006"],
+      "attribution": {
+        "status": "confirmed",
+        "method": "user_label",
+        "confidence": 1.0,
+        "face_track_id": null,
+        "face_similarity": null,
+        "lip_sync_confidence": null,
+        "visible_ratio": null,
+        "speaker_cluster_consistency": null,
+        "evidence": { "labeled_cluster": "spk_1" }
+      },
+      "corrected_by": "user-demo",
+      "corrected_at": "2026-07-14T10:06:00Z"
+    }
+  ],
+  "created_at": "2026-07-14T10:05:30Z"
+}

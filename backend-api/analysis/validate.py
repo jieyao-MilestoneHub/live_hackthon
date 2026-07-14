@@ -74,6 +74,31 @@ def validate_highlights(doc: dict[str, Any]) -> None:
     _validator("highlights.v1.schema.json").validate(doc)
 
 
+def validate_timeline(doc: dict[str, Any]) -> None:
+    """Validate a doc against timeline.v1. Raises jsonschema.ValidationError."""
+    _validator("timeline.v1.schema.json").validate(doc)
+
+
+def validate_subtitle(doc: dict[str, Any]) -> None:
+    """Validate a doc against subtitle.v1. Raises jsonschema.ValidationError."""
+    _validator("subtitle.v1.schema.json").validate(doc)
+
+
+def validate_effects(doc: dict[str, Any]) -> None:
+    """Validate a doc against effects.v1. Raises jsonschema.ValidationError."""
+    _validator("effects.v1.schema.json").validate(doc)
+
+
+def validate_render_spec(doc: dict[str, Any]) -> None:
+    """Validate a doc against render_spec.v1. Raises jsonschema.ValidationError."""
+    _validator("render_spec.v1.schema.json").validate(doc)
+
+
+def validate_artifact(doc: dict[str, Any]) -> None:
+    """Validate a doc against artifact.v1. Raises jsonschema.ValidationError."""
+    _validator("artifact.v1.schema.json").validate(doc)
+
+
 def load_sample(name: str) -> dict[str, Any]:
     """Load and parse a JSON sample from ``contracts_dir()/samples/name``."""
     return _load_json(contracts_dir() / "samples" / name)

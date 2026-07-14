@@ -1,0 +1,31 @@
+{
+  "schema_version": "people.v1",
+  "project_id": "project-123",
+  "participants": [
+    {
+      "person_id": "person_001",
+      "display_name": "主播 A",
+      "role": "protagonist",
+      "identity_source": "rekognition_collection",
+      "rekognition_collection_id": "lang-live-project-123",
+      "rekognition_external_id": "person_001",
+      "reference_image_keys": [
+        "tenant=demo/project=project-123/people/person_001/ref_01.jpg",
+        "tenant=demo/project=project-123/people/person_001/ref_02.jpg",
+        "tenant=demo/project=project-123/people/person_001/ref_03.jpg"
+      ],
+      "enrolled_at": "2026-07-14T09:58:00Z"
+    },
+    {
+      "person_id": "person_002",
+      "display_name": "來賓 B",
+      "role": "guest",
+      "identity_source": "user_label",
+      "rekognition_collection_id": null,
+      "rekognition_external_id": null,
+      "reference_image_keys": [],
+      "enrolled_at": "2026-07-14T10:05:00Z"
+    }
+  ],
+  "created_at": "2026-07-14T09:58:00Z"
+}

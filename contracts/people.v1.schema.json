@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/people.v1.schema.json",
+  "title": "people.v1",
+  "description": "專案人物名冊（Speaker Attribution）。把匿名聲音群組 spk_N 對應到的具名人物與角色登錄於此；由主角註冊（方案A：Rekognition Collection）或使用者圈選（方案B）產生。時間一律毫秒（ms）。additive 契約，不影響 transcript.v1。",
+  "type": "object",
+  "required": ["schema_version", "project_id", "participants"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "people.v1" },
+    "project_id": { "type": "string" },
+    "participants": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/participant" }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "participant": {
+      "type": "object",
+      "required": ["person_id", "display_name", "role", "identity_source"],
+      "additionalProperties": false,
+      "properties": {
+        "person_id": { "type": "string", "description": "專案內穩定人物 id，如 person_001" },
+        "display_name": { "type": "string", "description": "顯示名稱，如 主播 A" },
+        "role": {
+          "type": "string",
+          "enum": ["protagonist", "host", "guest", "unknown"]
+        },
+        "identity_source": {
+          "type": "string",
+          "enum": ["rekognition_collection", "user_label", "inferred"],
+          "description": "身分如何建立：臉部集合命中 / 使用者標記 / 系統推得"
+        },
+        "rekognition_collection_id": {
+          "type": ["string", "null"],
+          "description": "方案A：project-specific Rekognition Face Collection id"
+        },
+        "rekognition_external_id": {
+          "type": ["string", "null"],
+          "description": "IndexFaces 的 ExternalImageId（= person_id 綁定 3–10 張臉向量）"
+        },
+        "reference_image_keys": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "raw/work bucket 內的參考照片物件 key（僅記錄，Rekognition 只存臉向量不存原圖）"
+        },
+        "enrolled_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    }
+  }
+}
