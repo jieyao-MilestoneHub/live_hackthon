@@ -14,6 +14,17 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  # Remote state — the single canonical state for the one AWS env (dev).
+  # The bucket + lock table are bootstrapped out-of-band via the AWS CLI (they
+  # cannot be managed by the state they hold). See CLAUDE.md "Terraform state".
+  backend "s3" {
+    bucket         = "lang-live-tfstate-979287128595"
+    key            = "dev/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "lang-live-tflock"
+    encrypt        = true
+  }
 }
 
 provider "aws" {
