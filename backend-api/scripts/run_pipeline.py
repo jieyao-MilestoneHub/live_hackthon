@@ -37,6 +37,7 @@ from workers import (  # noqa: E402
     chat_analysis_worker,
     composer_worker,
     creative_worker,
+    refine_worker,
     render_worker,
 )
 
@@ -72,6 +73,11 @@ def main() -> int:
         help="影片長度毫秒（chat 模式，可選）",
     )
     parser.add_argument("--target-ms", type=int, default=30000, help="target duration ms (new project)")
+    parser.add_argument(
+        "--refine",
+        action="store_true",
+        help="chat 模式：annotate 後跑 AI 精修（Stub Transcribe/Bedrock）填台詞 + 提議笑點 offset",
+    )
     parser.add_argument("--render", action="store_true", help="also submit a render (Creative Planning -> QUEUED)")
     args = parser.parse_args()
 
@@ -147,6 +153,14 @@ def main() -> int:
             f"[pipeline] annotate -> {len(annotations['annotations'])} annotated highlights "
             f"(5 維度 + beats each)"
         )
+
+        if args.refine:
+            # 階段 5–6：AI 精修（Stub Transcribe/Bedrock）——提議笑點 offset + 填台詞。
+            refined = refine_worker.run(repo, storage, settings, project_id)
+            print(
+                f"[pipeline] refine   -> {len(refined['proposed_offsets'])} offset 提議, "
+                f"transcript {refined['transcript_segment_count']} 段, annotations 台詞已填(Stub)"
+            )
 
     if args.render:
         storage = get_storage()

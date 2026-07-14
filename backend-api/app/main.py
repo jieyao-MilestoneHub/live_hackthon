@@ -37,6 +37,8 @@ from app.schemas import (
     Project,
     ProjectCreate,
     ProjectCreated,
+    RefineRequest,
+    RefineResult,
     Render,
     RenderCreate,
     RenderCreated,
@@ -50,7 +52,13 @@ from app.schemas import (
 from app.settings import get_settings
 from app.state import InvalidTransition, ProjectState, assert_project_transition
 from app.storage import Storage, get_storage, resolve_part_count
-from workers import annotation_worker, chat_analysis_worker, composer_worker, creative_worker
+from workers import (
+    annotation_worker,
+    chat_analysis_worker,
+    composer_worker,
+    creative_worker,
+    refine_worker,
+)
 
 
 def _now_iso() -> str:
@@ -452,6 +460,40 @@ def put_annotations(
     tenant = project.get("tenant_id", "demo")
     storage.put_json(settings.work_bucket, settings.annotations_key(tenant, id), doc)
     return Annotations(**doc)
+
+
+@app.post("/projects/{id}/refine", response_model=RefineResult)
+def refine_project(
+    id: str,
+    body: RefineRequest | None = None,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> RefineResult:
+    """AI 精修（階段 5–6）：轉錄影片 → 提議笑點校正 offset + 敘事填 annotations 台詞。
+
+    離線走 Stub（Transcribe/Bedrock 罐頭）；真值需 USE_INMEMORY=0 上 AWS。預設只提議 offset
+    （交編輯器 PATCH 確認），apply_offsets=true 才自動套用。限 COMPOSING/READY_TO_EDIT。
+    """
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    status = ProjectState(project["status"])
+    if status not in (ProjectState.COMPOSING, ProjectState.READY_TO_EDIT):
+        raise HTTPException(status_code=409, detail=f"cannot refine in status {status.value}")
+    req = body or RefineRequest()
+    try:
+        result = refine_worker.run(
+            repo, storage, get_settings(), id, apply_offsets=req.apply_offsets, params=req.params
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return RefineResult(
+        project_id=id,
+        proposed_offsets=result["proposed_offsets"],
+        annotations=Annotations(**result["annotations"]),
+        transcript_segment_count=result["transcript_segment_count"],
+        applied=result["applied"],
+    )
 
 
 @app.get("/projects/{id}/timeline", response_model=Timeline)

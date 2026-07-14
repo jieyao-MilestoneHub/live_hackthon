@@ -14,6 +14,7 @@ from app.aws.config import AttributionConfig, get_attribution_config
 from app.aws.ports import (
     FaceEnrollmentPort,
     FaceSearchPort,
+    NarrativeReviewerPort,
     SemanticReviewerPort,
     TranscriberPort,
 )
@@ -62,7 +63,16 @@ def get_nova_reviewer() -> SemanticReviewerPort:
     )
 
 
+@lru_cache(maxsize=1)
+def get_narrative_reviewer() -> NarrativeReviewerPort:
+    settings, config, inmem = _deps()
+    return (
+        bedrock_nova.StubNarrativeReviewer(settings, config) if inmem
+        else bedrock_nova.RealNarrativeReviewer(settings, config)
+    )
+
+
 def cache_clear() -> None:
     """清掉所有 adapter 單例（測試切換 USE_INMEMORY 時呼叫）。"""
-    for fn in (get_transcriber, _get_rekognition, get_nova_reviewer):
+    for fn in (get_transcriber, _get_rekognition, get_nova_reviewer, get_narrative_reviewer):
         fn.cache_clear()

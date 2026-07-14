@@ -54,6 +54,10 @@ class Settings:
         """Work-bucket key for the structured annotations.v1 (5 維度標註 + 敘事節拍)."""
         return f"{self._project_prefix(tenant_id, project_id)}/annotations/annotations.json"
 
+    def transcript_key(self, tenant_id: str, project_id: str) -> str:
+        """Work-bucket key for the normalized transcript.v1 (AI 精修產生，供稽核/重用)."""
+        return f"{self._project_prefix(tenant_id, project_id)}/transcript/transcript.v1.json"
+
     def timeline_key(self, tenant_id: str, project_id: str, version: int) -> str:
         """Work-bucket key for a timeline version (§十六)."""
         return f"{self._project_prefix(tenant_id, project_id)}/timelines/version={version}/timeline.json"

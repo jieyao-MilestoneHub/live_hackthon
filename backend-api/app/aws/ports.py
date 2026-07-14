@@ -81,3 +81,19 @@ class SemanticReviewerPort(Protocol):
     ) -> str:
         """回傳 ``candidate_person_ids`` 之一或 ``"unknown"``（受約束輸出）。"""
         ...
+
+
+@runtime_checkable
+class NarrativeReviewerPort(Protocol):
+    """高光敘事精修（Amazon Bedrock — Nova）：由逐字稿產生「為什麼好笑」的敘事文字。
+
+    只吃純文字（逐字稿 + 聊天摘要），產出可讀的中文敘事——描述、各維度說明、各節拍台詞。
+    不辨識人物、不輸出時間碼（時間碼由規則式 annotations 決定）。
+    """
+
+    def enrich(self, context: dict[str, Any]) -> dict[str, Any]:
+        """回傳 ``{description, dimension_texts:{setup,...}, beat_lines:{"1":..}}``（受約束輸出）。
+
+        ``context`` = ``{highlight_id, title, transcript_text, dimensions:[名稱], beats:[order], chat_texts:[...]}``。
+        """
+        ...
