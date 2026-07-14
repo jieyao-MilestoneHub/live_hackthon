@@ -2,37 +2,35 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createJob } from '@/lib/api';
+import { createProject } from '@/lib/api';
 
-export default function UploadPage() {
+const MAX_TARGET_SEC = 60;
+const DEFAULT_TARGET_SEC = 30;
+
+export default function CreateProjectPage() {
   const router = useRouter();
-  const [file, setFile] = useState<File | null>(null);
+  const [title, setTitle] = useState('');
+  const [targetSec, setTargetSec] = useState(DEFAULT_TARGET_SEC);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file) {
-      setError('請先選擇一個影片檔案。');
+    if (targetSec < 1 || targetSec > MAX_TARGET_SEC) {
+      setError(`目標秒數需介於 1–${MAX_TARGET_SEC} 秒。`);
       return;
     }
     setError(null);
     setSubmitting(true);
     try {
-      const created = await createJob({
-        filename: file.name,
-        content_type: file.type || 'video/mp4',
+      const created = await createProject({
+        title: title.trim() || undefined,
+        target_duration_ms: Math.round(targetSec * 1000),
       });
-
-      // TODO(team, #16): 走路骨架僅建立 job 後直接導向狀態頁。
-      // 後續：用 created.upload 的 presigned URL 執行真正的 S3 multipart 上傳，
-      // 將 file 的 bytes 以 PUT 上傳到 created.upload.url（method/key 依後端回傳）。
-      // 上傳完成後再通知後端開始處理（依契約補上對應端點）。
-
-      router.push(`/jobs?id=${encodeURIComponent(created.job_id)}`);
+      router.push(`/projects?id=${encodeURIComponent(created.project_id)}`);
     } catch (err) {
       console.error(err);
-      setError('建立工作失敗，請稍後再試。');
+      setError('建立 Project 失敗，請稍後再試。');
       setSubmitting(false);
     }
   }
@@ -40,34 +38,54 @@ export default function UploadPage() {
   return (
     <main>
       <div className="card">
-        <h1>上傳直播影片</h1>
+        <h1>建立影片專案</h1>
         <p className="subtitle" style={{ marginBottom: 20 }}>
-          選擇一段直播錄影，系統會自動分析並剪出精彩高光短片。
+          指定最終短片的目標長度（上限 {MAX_TARGET_SEC} 秒），接著上傳原始直播影片，
+          系統會分析高光並建立初始剪輯草稿。
         </p>
         <form onSubmit={handleSubmit}>
-          <label htmlFor="video">影片檔案（mp4 等）</label>
+          <label htmlFor="title">專案標題（選填）</label>
           <input
-            id="video"
-            type="file"
-            accept="video/*"
-            onChange={(e) => {
-              setFile(e.target.files?.[0] ?? null);
-              setError(null);
-            }}
+            id="title"
+            type="text"
+            placeholder="例如：巔峰對決精華"
+            value={title}
+            maxLength={80}
+            onChange={(e) => setTitle(e.target.value)}
           />
 
-          {file && (
+          <div className="spacer">
+            <label htmlFor="target">目標秒數（1–{MAX_TARGET_SEC} 秒）</label>
+            <div className="row">
+              <input
+                id="target"
+                type="range"
+                min={1}
+                max={MAX_TARGET_SEC}
+                value={targetSec}
+                onChange={(e) => setTargetSec(Number(e.target.value))}
+                style={{ flex: 1 }}
+              />
+              <input
+                type="number"
+                min={1}
+                max={MAX_TARGET_SEC}
+                value={targetSec}
+                onChange={(e) => setTargetSec(Number(e.target.value))}
+                className="num-input"
+                aria-label="目標秒數"
+              />
+              <span className="mono muted">秒</span>
+            </div>
             <p className="hint">
-              已選擇：<span className="mono">{file.name}</span>
-              {file.size > 0 && (
-                <> · {(file.size / (1024 * 1024)).toFixed(1)} MB</>
-              )}
+              = <span className="mono">{Math.round(targetSec * 1000)}</span> ms
+              （契約以毫秒為單位）
             </p>
-          )}
+          </div>
 
           <div className="row spacer">
-            <button type="submit" disabled={submitting || !file}>
-              {submitting ? '建立工作中…' : '建立高光剪輯工作'}
+            <button type="submit" disabled={submitting}>
+              {submitting ? '建立中…' : '建立專案並前往上傳'}
             </button>
           </div>
 
@@ -75,9 +93,8 @@ export default function UploadPage() {
         </form>
 
         <p className="hint">
-          走路骨架階段：僅建立 job 後導向狀態頁，尚未執行真正的 S3
-          上傳（見程式碼 TODO）。若後端未啟動，會自動使用本地 mock
-          資料以便預覽 UI。
+          建立後將導向編輯器（<span className="mono">/projects?id=…</span>）。
+          若後端未啟動，會自動使用本地 mock 資料以便預覽 UI。
         </p>
       </div>
     </main>

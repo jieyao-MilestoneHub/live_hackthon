@@ -33,7 +33,7 @@ body {
 }
 
 .container {
-  max-width: 780px;
+  max-width: 860px;
   margin: 0 auto;
   padding: 48px 20px 80px;
 }
@@ -234,4 +234,241 @@ a {
 
 .mono {
   font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* Text / number / range inputs */
+input[type="text"],
+input[type="number"] {
+  width: 100%;
+  padding: 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+}
+
+input[type="number"].num-input {
+  width: 84px;
+  padding: 10px 12px;
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+button.sm {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+/* Indeterminate progress (server-side processing) */
+.progress.indeterminate > span {
+  width: 40%;
+  animation: indet 1.2s ease-in-out infinite;
+}
+
+@keyframes indet {
+  0% {
+    margin-left: -40%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+
+/* Four-region editor grid (demand.md §十) */
+.editor {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.editor .card {
+  margin-bottom: 0;
+}
+
+.region-preview,
+.region-timeline,
+.region-actions {
+  grid-column: 1 / -1;
+}
+
+.region-highlights {
+  grid-column: 1 / 2;
+}
+
+.region-settings {
+  grid-column: 2 / 3;
+}
+
+@media (max-width: 640px) {
+  .editor {
+    grid-template-columns: 1fr;
+  }
+  .region-highlights,
+  .region-settings {
+    grid-column: 1 / -1;
+  }
+}
+
+.region-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+/* Video Preview */
+.preview-wrap {
+  display: flex;
+  justify-content: center;
+  background: var(--bg-elev);
+  border-radius: 10px;
+  padding: 16px;
+  margin: 8px 0;
+}
+
+.preview-frame {
+  max-width: 100%;
+  background: radial-gradient(120% 120% at 50% 0%, #223 0%, #0d1122 100%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preview-note {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Highlight candidate cards */
+.hl {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--bg-elev);
+}
+
+.hl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 2px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.hl-title {
+  font-weight: 700;
+  flex: 1;
+}
+
+/* Settings rows */
+.setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.setting:last-child {
+  border-bottom: none;
+}
+
+.setting-label {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.toggle {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.toggle.on {
+  color: var(--good);
+  border-color: color-mix(in srgb, var(--good) 40%, transparent);
+  background: color-mix(in srgb, var(--good) 12%, transparent);
+}
+
+/* Segmented control (effect / aspect) */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.seg-btn {
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-radius: 0;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.seg-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.seg-btn.active {
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+/* Timeline track */
+.track {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  min-height: 72px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.track-clip {
+  min-width: 96px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 28%, var(--card)),
+    var(--card)
+  );
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.track-order {
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.track-id {
+  font-size: 12px;
+}
+
+.track-time {
+  font-size: 11px;
+  color: var(--muted);
 }

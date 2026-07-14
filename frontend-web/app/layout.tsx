@@ -20,7 +20,7 @@ export default function RootLayout({
               <span className="wave">浪</span> LIVE
             </span>
           </div>
-          <p className="subtitle">AI 直播高光自動剪輯 · 走路骨架</p>
+          <p className="subtitle">AI 直播高光自動剪輯 · 影片編輯器</p>
           {children}
         </div>
       </body>
