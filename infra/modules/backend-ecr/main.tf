@@ -1,6 +1,8 @@
-# Backend delivery: ECR repository + App Runner service (FastAPI container).
-# App Runner pulls from ECR using an access role; the running task uses an
-# (optional) instance role for AWS API calls once the pipeline is wired.
+# backend-ecr: ECR repository for the backend (FastAPI) container image.
+# The Lambda backend (modules/backend-lambda) pulls its image from this repo
+# (tag :lambda). Two App Runner IAM roles are kept but unused — App Runner is
+# SCP-blocked in this workshop account (see the NOTE at the bottom); reinstate a
+# service only if this ever runs in an account without that SCP.
 
 locals {
   # A public.ecr.aws image needs image_repository_type=ECR_PUBLIC and no

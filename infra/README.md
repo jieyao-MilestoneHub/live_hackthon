@@ -19,7 +19,7 @@ infra/
 │   ├── state-table/         # VideoEditor DynamoDB single table (demand.md §17)
 │   ├── auth/                # Cognito user pool + public web client (demand.md §3/§4)
 │   ├── frontend-cdn/        # private S3 + CloudFront (OAC) for Next.js static export
-│   ├── backend-apprunner/   # ECR repo for the FastAPI image (App Runner SCP-blocked)
+│   ├── backend-ecr/         # ECR repo for the FastAPI image (App Runner SCP-blocked)
 │   └── backend-lambda/      # Lambda container + API Gateway HTTP API (App Runner alt)
 ├── deploy.sh                # dev deploy runbook (ordering: ECR → push → full apply → frontend)
 └── README.md

@@ -1,6 +1,6 @@
 variable "name" {
   type        = string
-  description = "Base name for the App Runner service, ECR repo, and IAM roles."
+  description = "Base name for the ECR repo and the (vestigial) App Runner IAM roles."
 }
 
 variable "backend_image" {

@@ -33,7 +33,7 @@ module "frontend" {
 
 # Backend ECR repo (App Runner service removed — SCP-blocked in workshop account).
 module "backend" {
-  source        = "../../modules/backend-apprunner"
+  source        = "../../modules/backend-ecr"
   name          = "${var.project}-backend-${var.env}"
   backend_image = var.backend_image
 }
