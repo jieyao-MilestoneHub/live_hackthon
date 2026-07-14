@@ -4,7 +4,7 @@ Terraform for the 浪 LIVE walking skeleton (AI livestream highlight clipping).
 This scaffolds the `dev` environment; the full target architecture lives in
 [`docs/aws-infra.md`](../docs/aws-infra.md).
 
-- **Region:** `ap-northeast-1` (Tokyo)
+- **Region:** `us-east-1` (N. Virginia)
 - **State:** local for now (no remote backend). Add an S3/DynamoDB backend
   before sharing state across the team.
 
@@ -56,7 +56,7 @@ terraform validate                 # -> "Success! The configuration is valid."
 ```
 
 `terraform validate` does not call AWS, so no credentials are required.
-For a real `plan`/`apply` you need AWS credentials for `ap-northeast-1`:
+For a real `plan`/`apply` you need AWS credentials for `us-east-1`:
 
 ```bash
 terraform init                     # (with a real backend or local state)

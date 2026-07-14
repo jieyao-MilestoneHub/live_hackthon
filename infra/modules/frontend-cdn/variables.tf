@@ -12,7 +12,7 @@ variable "default_root_object" {
 variable "price_class" {
   type        = string
   default     = "PriceClass_200"
-  description = "CloudFront price class (200 covers NA/EU/Asia incl. Tokyo)."
+  description = "CloudFront price class (200 covers NA/EU/Asia)."
 }
 
 variable "tags" {

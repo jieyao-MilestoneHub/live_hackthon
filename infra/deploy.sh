@@ -11,14 +11,14 @@
 # This is a RUNBOOK: it is safe to read top-to-bottom and run step by step.
 # It needs real AWS credentials — it is NOT required for `terraform validate`.
 #
-# Prereqs: terraform, aws cli (configured for ap-northeast-1), docker, node/npm.
+# Prereqs: terraform, aws cli (configured for us-east-1), docker, node/npm.
 set -euo pipefail
 
 # ----------------------------------------------------------------------------
 # Config
 # ----------------------------------------------------------------------------
 ENV_DIR="environments/dev"
-REGION="${AWS_REGION:-ap-northeast-1}"
+REGION="${AWS_REGION:-us-east-1}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
 echo "==> 浪 LIVE dev deploy | region=${REGION} tag=${IMAGE_TAG}"
