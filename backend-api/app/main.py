@@ -288,3 +288,12 @@ def get_render(
 @app.get("/artifacts/{artifact_id}/download")
 def get_artifact_download_url(artifact_id: str) -> dict:  # noqa: ARG001
     raise _not_implemented("artifact download (M4)")
+
+
+# --- Speaker Attribution feature (mounted) ---------------------------------
+# 具名說話者逐字稿端點：POST/GET /projects/{id}/people、POST /projects/{id}/attribution、
+# GET /projects/{id}/transcript、PATCH /projects/{id}/speakers|utterances/...
+# router 與模型自成一檔（app/attribution_api.py），此處僅一行掛載。
+from app.attribution_api import router as attribution_router  # noqa: E402
+
+app.include_router(attribution_router)
