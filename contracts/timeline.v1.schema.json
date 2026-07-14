@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/timeline.v1.schema.json",
+  "title": "timeline.v1",
+  "description": "剪輯決策表 / EDL（Composer Worker 輸出、編輯器 PUT 更新的契約）。時間一律毫秒（ms）。每次編輯建立新 version、不覆蓋舊版（append-only，見 demand.md §十）。",
+  "type": "object",
+  "required": ["schema_version", "project_id", "version", "target_duration_ms", "actual_duration_ms", "clips"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "timeline.v1" },
+    "project_id": { "type": "string" },
+    "version": { "type": "integer", "minimum": 1, "description": "單調遞增；每次編輯 +1，不覆蓋舊版" },
+    "target_duration_ms": { "type": "integer", "minimum": 0, "maximum": 60000, "description": "使用者指定的最終短片長度（毫秒），上限 60000（60 秒）" },
+    "actual_duration_ms": { "type": "integer", "minimum": 0, "description": "Composer 實際產出的長度（毫秒），須落在 target ±500ms 內" },
+    "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1"] },
+    "subtitle_settings": { "type": "object", "additionalProperties": true, "description": "字幕開關/樣式設定（供 Creative Worker 使用）" },
+    "effect_settings": { "type": "object", "additionalProperties": true, "description": "特效強度/開關設定（供 Creative Worker 使用）" },
+    "created_by": { "type": "string", "description": "composer | user_id" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "clips": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/clip" }
+    }
+  },
+  "$defs": {
+    "clip": {
+      "type": "object",
+      "required": ["timeline_order", "highlight_id", "source_start_ms", "source_end_ms", "timeline_start_ms", "timeline_end_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "timeline_order": { "type": "integer", "minimum": 1, "description": "1-based 播放順序" },
+        "highlight_id": { "type": "string", "description": "對應 highlights.v1 的 highlight_id" },
+        "source_start_ms": { "type": "integer", "minimum": 0, "description": "原始影片中的裁切起點（毫秒）" },
+        "source_end_ms": { "type": "integer", "minimum": 0, "description": "原始影片中的裁切終點（毫秒）" },
+        "timeline_start_ms": { "type": "integer", "minimum": 0, "description": "在輸出短片中的起點（毫秒）" },
+        "timeline_end_ms": { "type": "integer", "minimum": 0, "description": "在輸出短片中的終點（毫秒）" }
+      }
+    }
+  }
+}

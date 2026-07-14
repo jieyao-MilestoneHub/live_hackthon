@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/artifact.v1.schema.json",
+  "title": "artifact.v1",
+  "description": "最終產物清單 / manifest.json（Render Workflow 的 Publish Artifact 輸出；使用者下載的依據）。時間一律毫秒（ms）。對應 demand.md §十五 與 §十七 Artifact item。",
+  "type": "object",
+  "required": ["schema_version", "artifact_id", "project_id", "render_id", "status", "files"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "artifact.v1" },
+    "artifact_id": { "type": "string" },
+    "project_id": { "type": "string" },
+    "render_id": { "type": "string" },
+    "timeline_version": { "type": "integer", "minimum": 1 },
+    "status": { "type": "string", "enum": ["READY", "FAILED"], "description": "產物層級狀態（有別於 Render/Project 狀態機）" },
+    "duration_ms": { "type": "integer", "minimum": 0, "description": "成片長度（毫秒）" },
+    "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1"] },
+    "resolution": {
+      "type": "object",
+      "required": ["width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "size_bytes": { "type": "integer", "minimum": 0 },
+    "checksum": { "type": "string", "description": "如 sha256:..." },
+    "files": {
+      "type": "object",
+      "required": ["video_key"],
+      "additionalProperties": false,
+      "properties": {
+        "video_key": { "type": "string" },
+        "preview_key": { "type": "string" },
+        "thumbnail_key": { "type": "string" },
+        "subtitle_key": { "type": "string" },
+        "timeline_key": { "type": "string" },
+        "render_spec_key": { "type": "string" },
+        "manifest_key": { "type": "string" }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

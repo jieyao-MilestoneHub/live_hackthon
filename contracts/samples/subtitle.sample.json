@@ -1,0 +1,39 @@
+{
+  "schema_version": "subtitle.v1",
+  "language": "zh-TW",
+  "project_id": "project-123",
+  "render_id": "render-456",
+  "style": { "font": "Noto Sans TC", "size": 48, "position": "bottom" },
+  "cues": [
+    {
+      "start_ms": 0,
+      "end_ms": 3000,
+      "text": "欸欸欸來了來了！就是現在！",
+      "emphasis_words": ["來了", "現在"]
+    },
+    {
+      "start_ms": 3000,
+      "end_ms": 8000,
+      "text": "大家快看，這個超級厲害！",
+      "emphasis_words": ["超級厲害"]
+    },
+    {
+      "start_ms": 8000,
+      "end_ms": 15000,
+      "text": "成功了！我們做到了！",
+      "emphasis_words": ["成功了", "做到了"]
+    },
+    {
+      "start_ms": 15000,
+      "end_ms": 22000,
+      "text": "哇這個真的太扯了！這波操作也太神了吧！",
+      "emphasis_words": ["太扯了", "太神了"]
+    },
+    {
+      "start_ms": 22000,
+      "end_ms": 29800,
+      "text": "這絕對是今天最精彩的一段！",
+      "emphasis_words": ["最精彩"]
+    }
+  ]
+}

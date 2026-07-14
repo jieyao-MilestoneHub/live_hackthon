@@ -1,34 +1,39 @@
 {
   "schema_version": "highlights.v1",
-  "job_id": "job_sample_0001",
+  "project_id": "project-123",
+  "source_duration_ms": 240000,
   "analysis_version": "highlight-rule-1.0.0",
   "parameters": {
     "max_clips": 5,
-    "min_duration_sec": 15,
-    "max_duration_sec": 60,
-    "padding_before_sec": 2,
-    "padding_after_sec": 3
+    "min_duration_ms": 15000,
+    "max_duration_ms": 60000,
+    "padding_before_ms": 2000,
+    "padding_after_ms": 3000
   },
   "highlights": [
     {
-      "clip_id": "clip_001",
-      "start_sec": 150.0,
-      "end_sec": 188.0,
+      "highlight_id": "hl-001",
+      "start_ms": 150000,
+      "end_ms": 188000,
       "score": 0.93,
       "reason": "情緒詞與驚呼密集（來了、超級厲害、成功了、太爽了），語速高峰",
-      "title": "衝了！成功時刻",
+      "transcript": "欸欸欸來了來了！就是現在！大家快看，這個超級厲害，我要衝了啊啊啊！成功了！我們做到了！太爽了吧這個，感謝大家的應援！",
+      "suggested_title": "衝了！成功時刻",
       "source_segment_ids": ["seg_0007", "seg_0008"],
-      "render_profile": "vertical-1080x1920"
+      "selected": true,
+      "locked": false
     },
     {
-      "clip_id": "clip_002",
-      "start_sec": 43.0,
-      "end_sec": 78.0,
+      "highlight_id": "hl-002",
+      "start_ms": 43000,
+      "end_ms": 78000,
       "score": 0.88,
       "reason": "驚嘆與高強度情緒（太扯了、太神了、起雞皮疙瘩、最精彩）",
-      "title": "神操作",
+      "transcript": "哇這個真的太扯了！各位有看到嗎？這波操作也太神了吧，我完全沒想到會這樣！天啊我起雞皮疙瘩了，這絕對是今天最精彩的一段，太誇張了！",
+      "suggested_title": "神操作",
       "source_segment_ids": ["seg_0003", "seg_0004"],
-      "render_profile": "vertical-1080x1920"
+      "selected": true,
+      "locked": false
     }
   ],
   "created_at": "2026-07-14T10:05:00Z"

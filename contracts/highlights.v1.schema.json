@@ -2,24 +2,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://live-hackthon/contracts/highlights.v1.schema.json",
   "title": "highlights.v1",
-  "description": "高光分析輸出（分析模組 → 系統裁切的介面契約）。對應 issue #6。",
+  "description": "高光分析輸出（Analysis Worker → Composer / 編輯器的介面契約）。M1 Project/毫秒版：project_id、highlight_id、時間一律毫秒（ms）、含 source_duration_ms 與 suggested_title。對應 issue #6。",
   "type": "object",
-  "required": ["schema_version", "job_id", "analysis_version", "parameters", "highlights"],
+  "required": ["schema_version", "project_id", "source_duration_ms", "highlights"],
   "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "highlights.v1" },
-    "job_id": { "type": "string" },
+    "project_id": { "type": "string" },
+    "source_duration_ms": { "type": "integer", "minimum": 0, "description": "原始影片長度（毫秒）" },
     "analysis_version": { "type": "string", "description": "分析模型/規則版本，如 highlight-rule-1.0.0" },
     "parameters": {
       "type": "object",
-      "required": ["max_clips", "min_duration_sec", "max_duration_sec"],
       "additionalProperties": true,
       "properties": {
         "max_clips": { "type": "integer", "minimum": 1 },
-        "min_duration_sec": { "type": "number", "minimum": 0 },
-        "max_duration_sec": { "type": "number", "minimum": 0 },
-        "padding_before_sec": { "type": "number", "minimum": 0, "default": 0 },
-        "padding_after_sec": { "type": "number", "minimum": 0, "default": 0 }
+        "min_duration_ms": { "type": "integer", "minimum": 0 },
+        "max_duration_ms": { "type": "integer", "minimum": 0 },
+        "padding_before_ms": { "type": "integer", "minimum": 0, "default": 0 },
+        "padding_after_ms": { "type": "integer", "minimum": 0, "default": 0 }
       }
     },
     "highlights": {
@@ -31,17 +31,19 @@
   "$defs": {
     "highlight": {
       "type": "object",
-      "required": ["clip_id", "start_sec", "end_sec", "score"],
+      "required": ["highlight_id", "start_ms", "end_ms", "score"],
       "additionalProperties": false,
       "properties": {
-        "clip_id": { "type": "string", "description": "job 內唯一" },
-        "start_sec": { "type": "number", "minimum": 0 },
-        "end_sec": { "type": "number", "minimum": 0 },
+        "highlight_id": { "type": "string", "description": "project 內唯一" },
+        "start_ms": { "type": "integer", "minimum": 0, "description": "原始影片中的起點（毫秒）" },
+        "end_ms": { "type": "integer", "minimum": 0, "description": "原始影片中的終點（毫秒）" },
         "score": { "type": "number", "minimum": 0, "maximum": 1 },
-        "reason": { "type": "string" },
-        "title": { "type": "string" },
+        "reason": { "type": "string", "description": "此片段被選為高光的原因" },
+        "transcript": { "type": "string", "description": "此片段對應的逐字內容" },
+        "suggested_title": { "type": "string", "description": "AI 建議的短片標題" },
         "source_segment_ids": { "type": "array", "items": { "type": "string" } },
-        "render_profile": { "type": "string", "description": "如 vertical-1080x1920" }
+        "selected": { "type": "boolean", "description": "編輯器：是否被選入草稿（預設由 Composer 決定）" },
+        "locked": { "type": "boolean", "description": "編輯器：使用者是否鎖定此片段（重新組片時不得移除）" }
       }
     }
   }

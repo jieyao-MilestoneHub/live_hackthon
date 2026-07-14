@@ -1,0 +1,27 @@
+{
+  "schema_version": "render_spec.v1",
+  "project_id": "project-123",
+  "render_id": "render-456",
+  "timeline_version": 1,
+  "effect_seed": 834710,
+  "aspect_ratio": "9:16",
+  "resolution": { "width": 1080, "height": 1920 },
+  "source": {
+    "bucket": "video-editor-raw-dev",
+    "key": "tenant=demo/project=project-123/source/source.mp4",
+    "version_id": "sample"
+  },
+  "inputs": {
+    "timeline_key": "tenant=demo/project=project-123/timelines/version=1/timeline.json",
+    "subtitle_key": "tenant=demo/project=project-123/renders/render=render-456/subtitle.vtt",
+    "effect_plan_key": "tenant=demo/project=project-123/renders/render=render-456/effect-plan.json"
+  },
+  "outputs": {
+    "video_key": "tenant=demo/project=project-123/artifacts/artifact=artifact-789/final.mp4",
+    "preview_key": "tenant=demo/project=project-123/artifacts/artifact=artifact-789/preview.mp4",
+    "thumbnail_key": "tenant=demo/project=project-123/artifacts/artifact=artifact-789/thumbnail.jpg"
+  },
+  "audio": { "normalize": true, "target_lufs": -14 },
+  "encode": { "video_codec": "h264", "audio_codec": "aac", "crf": 20, "fps": 30 },
+  "created_at": "2026-07-14T12:20:00Z"
+}

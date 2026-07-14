@@ -1,0 +1,30 @@
+{
+  "schema_version": "timeline.v1",
+  "project_id": "project-123",
+  "version": 1,
+  "target_duration_ms": 30000,
+  "actual_duration_ms": 29800,
+  "aspect_ratio": "9:16",
+  "subtitle_settings": { "enabled": true, "mode": "auto" },
+  "effect_settings": { "enabled": true, "intensity": "medium" },
+  "created_by": "composer",
+  "created_at": "2026-07-14T10:06:00Z",
+  "clips": [
+    {
+      "timeline_order": 1,
+      "highlight_id": "hl-001",
+      "source_start_ms": 150000,
+      "source_end_ms": 165000,
+      "timeline_start_ms": 0,
+      "timeline_end_ms": 15000
+    },
+    {
+      "timeline_order": 2,
+      "highlight_id": "hl-002",
+      "source_start_ms": 43000,
+      "source_end_ms": 57800,
+      "timeline_start_ms": 15000,
+      "timeline_end_ms": 29800
+    }
+  ]
+}

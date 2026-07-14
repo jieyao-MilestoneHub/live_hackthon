@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/render_spec.v1.schema.json",
+  "title": "render_spec.v1",
+  "description": "渲染規格書（Render Workflow 的 Build Render Specification 步驟輸出；FFmpeg Heavy Worker 的輸入契約）。彙整 source + timeline + 字幕/特效計畫 + 輸出參數，讓 FFmpeg 一次完成裁切/串接/轉場/字幕/特效/編碼（demand.md 未給定義，本檔為契約管家設計，依 §十一/§十三/§十五）。",
+  "type": "object",
+  "required": ["schema_version", "project_id", "render_id", "timeline_version", "effect_seed", "aspect_ratio", "resolution", "source", "inputs", "outputs"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "render_spec.v1" },
+    "project_id": { "type": "string" },
+    "render_id": { "type": "string" },
+    "timeline_version": { "type": "integer", "minimum": 1, "description": "凍結的 timeline 版本" },
+    "effect_seed": { "type": "integer", "description": "與 effects.v1 一致的隨機種子" },
+    "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1"] },
+    "resolution": { "$ref": "#/$defs/resolution" },
+    "source": {
+      "type": "object",
+      "required": ["bucket", "key"],
+      "additionalProperties": false,
+      "properties": {
+        "bucket": { "type": "string" },
+        "key": { "type": "string" },
+        "version_id": { "type": "string" }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "required": ["timeline_key"],
+      "additionalProperties": false,
+      "properties": {
+        "timeline_key": { "type": "string", "description": "timeline.v1 的 S3 key" },
+        "subtitle_key": { "type": "string", "description": "subtitle.vtt / subtitle.v1 的 S3 key" },
+        "effect_plan_key": { "type": "string", "description": "effects.v1 的 S3 key" }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "required": ["video_key"],
+      "additionalProperties": false,
+      "properties": {
+        "video_key": { "type": "string", "description": "final.mp4 的 S3 key" },
+        "preview_key": { "type": "string", "description": "preview.mp4 的 S3 key" },
+        "thumbnail_key": { "type": "string", "description": "thumbnail.jpg 的 S3 key" }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "normalize": { "type": "boolean", "default": true, "description": "是否做音量正規化" },
+        "target_lufs": { "type": "number", "description": "目標響度（LUFS），如 -14" }
+      }
+    },
+    "encode": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "video_codec": { "type": "string", "default": "h264" },
+        "audio_codec": { "type": "string", "default": "aac" },
+        "crf": { "type": "integer", "minimum": 0, "maximum": 51 },
+        "fps": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "resolution": {
+      "type": "object",
+      "required": ["width", "height"],
+      "additionalProperties": false,
+      "properties": {
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

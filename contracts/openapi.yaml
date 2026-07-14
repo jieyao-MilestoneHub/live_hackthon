@@ -1,10 +1,12 @@
 openapi: 3.0.3
 info:
-  title: 浪 LIVE Job API
-  version: 0.1.0
+  title: 浪 LIVE Editor API
+  version: 0.2.0
   description: >
-    影片高光剪輯 Job API（前後端共用契約）。M0 走路骨架先提供 stub，
-    團隊依此契約在 backend-api / frontend-web 續建。
+    影片高光剪輯「編輯器控制面」API（前後端共用契約）。M1 Project/毫秒版：
+    核心實體為 Project、時間一律毫秒（ms）、雙 pipeline（分析組片 + 渲染）。
+    App Runner 只負責 HTTP 控制面（驗證 Cognito JWT、Project/Timeline/Render 狀態、
+    presigned 上傳/下載），長時間工作交由非同步 Worker。對應 demand.md §四。
 servers:
   - url: http://localhost:8080
     description: 本機
@@ -25,120 +27,410 @@ paths:
                 properties:
                   status: { type: string, example: ok }
                   version: { type: string }
-  /jobs:
+
+  /projects:
     post:
-      summary: 建立影片處理工作，回傳 job_id 與上傳資訊
-      operationId: createJob
+      summary: 建立 Project，指定目標秒數，回傳 project_id 與配置的 source key
+      operationId: createProject
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/JobCreate" }
+            schema: { $ref: "#/components/schemas/ProjectCreate" }
       responses:
         "201":
           description: 已建立
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/JobCreated" }
-  /jobs/{job_id}:
-    get:
-      summary: 查詢工作狀態與結果
-      operationId: getJob
+              schema: { $ref: "#/components/schemas/ProjectCreated" }
+
+  /projects/{id}/upload-session:
+    post:
+      summary: 產生原始影片 Raw bucket 的 presigned multipart 上傳授權
+      description: >
+        回傳 multipart upload_id 與各 part 的 presigned URL；瀏覽器直接對 S3 Raw
+        bucket 上傳（不經過 API）。狀態 CREATED → UPLOAD_PENDING。
+      operationId: createUploadSession
       parameters:
-        - name: job_id
-          in: path
-          required: true
-          schema: { type: string }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UploadSessionCreate" }
+      responses:
+        "201":
+          description: 已建立上傳工作階段
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadSession" }
+        "404": { description: project 不存在 }
+
+  /projects/{id}:
+    get:
+      summary: 查詢 Project 狀態（前端 2–5 秒輪詢）
+      operationId: getProject
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         "200":
           description: OK
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/JobStatus" }
+              schema: { $ref: "#/components/schemas/Project" }
         "404": { description: 不存在 }
-  /jobs/{job_id}/artifacts/{clip_id}/download:
+
+  /projects/{id}/highlights:
     get:
-      summary: 取得短片下載連結（MVP：presigned URL；企業版：CloudFront signed URL）
-      operationId: getDownloadUrl
+      summary: 讀取高光候選（highlights.v1 投影）
+      operationId: getHighlights
       parameters:
-        - name: job_id
-          in: path
-          required: true
-          schema: { type: string }
-        - name: clip_id
-          in: path
-          required: true
-          schema: { type: string }
+        - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         "200":
           description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HighlightList" }
+        "404": { description: 不存在 }
+        "501": { description: 尚未實作（M2 Analysis Worker） }
+
+  /projects/{id}/timeline:
+    get:
+      summary: 讀取目前（最新版）Timeline（timeline.v1 投影）
+      operationId: getTimeline
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Timeline" }
+        "404": { description: 不存在 }
+        "501": { description: 尚未實作（M2 Composer Worker） }
+    put:
+      summary: 儲存 Timeline 編輯結果；建立新版本（不覆蓋舊版）
+      operationId: updateTimeline
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Timeline" }
+      responses:
+        "200":
+          description: 已建立新版本
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [timeline_version]
+                properties:
+                  timeline_version: { type: integer }
+        "404": { description: 不存在 }
+        "501": { description: 尚未實作（M2） }
+
+  /projects/{id}/compose:
+    post:
+      summary: 重新執行自動組片（Composer），產生新 Timeline 版本
+      operationId: composeTimeline
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ComposeRequest" }
+      responses:
+        "202":
+          description: 已接受（非同步組片）
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  url: { type: string, format: uri }
-                  expires_in_sec: { type: integer }
+                  timeline_version: { type: integer }
         "404": { description: 不存在 }
+        "501": { description: 尚未實作（M2 Composer Worker） }
+
+  /projects/{id}/renders:
+    post:
+      summary: 提交 Render 工作；凍結 timeline_version、建立 render_id
+      operationId: createRender
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RenderCreate" }
+      responses:
+        "202":
+          description: 已接受（非同步渲染）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RenderCreated" }
+        "404": { description: 不存在 }
+        "501": { description: 尚未實作（M3/M4 Render pipeline） }
+
+  /renders/{render_id}:
+    get:
+      summary: 查詢 Render 工作狀態
+      operationId: getRender
+      parameters:
+        - { name: render_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Render" }
+        "404": { description: 不存在 }
+        "501": { description: 尚未實作（M3/M4） }
+
+  /artifacts/{artifact_id}/download:
+    get:
+      summary: 取得最終產物的 Signed Download URL
+      operationId: getArtifactDownloadUrl
+      parameters:
+        - { name: artifact_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DownloadUrl" }
+        "404": { description: 不存在 }
+        "501": { description: 尚未實作（M4） }
+
 components:
   schemas:
-    JobCreate:
-      type: object
-      required: [filename]
-      properties:
-        filename: { type: string, example: stream.mp4 }
-        content_type: { type: string, example: video/mp4 }
-        tenant_id: { type: string }
-    JobCreated:
-      type: object
-      required: [job_id, status]
-      properties:
-        job_id: { type: string }
-        status: { $ref: "#/components/schemas/JobState" }
-        upload:
-          type: object
-          description: S3 presigned multipart 上傳資訊（本機 stub 可回本地上傳端點）
-          properties:
-            method: { type: string, example: PUT }
-            url: { type: string, format: uri }
-            key: { type: string }
-    JobStatus:
-      type: object
-      required: [job_id, status]
-      properties:
-        job_id: { type: string }
-        status: { $ref: "#/components/schemas/JobState" }
-        current_stage: { type: string }
-        progress: { type: integer, minimum: 0, maximum: 100 }
-        highlights:
-          type: array
-          description: 完成後填入（對應 highlights.v1 的 highlight 項）
-          items: { $ref: "#/components/schemas/Clip" }
-        error_code: { type: string }
-        error_message: { type: string }
-    Clip:
-      type: object
-      required: [clip_id, start_sec, end_sec]
-      properties:
-        clip_id: { type: string }
-        start_sec: { type: number }
-        end_sec: { type: number }
-        score: { type: number }
-        reason: { type: string }
-        title: { type: string }
-        download_ready: { type: boolean }
-    JobState:
+    ProjectState:
       type: string
+      description: Project 狀態機（demand.md §十八）
       enum:
         - CREATED
         - UPLOAD_PENDING
-        - UPLOADED
-        - QUEUED
-        - VALIDATING
-        - TRANSCRIBING
+        - UPLOADING
         - ANALYZING
+        - COMPOSING
+        - READY_TO_EDIT
+        - RENDER_REQUESTED
         - RENDERING
-        - FINALIZING
+        - ARTIFACT_READY
+        - FAILED
+
+    RenderState:
+      type: string
+      description: Render 狀態機（demand.md §十八）
+      enum:
+        - CREATED
+        - PLANNING_SUBTITLES
+        - PLANNING_EFFECTS
+        - QUEUED
+        - RENDERING
+        - VALIDATING
+        - PUBLISHING
         - SUCCEEDED
         - FAILED
-        - CANCELLED
+
+    ProjectCreate:
+      type: object
+      required: [target_duration_ms]
+      properties:
+        title: { type: string, example: 我的直播精華 }
+        target_duration_ms:
+          type: integer
+          minimum: 1000
+          maximum: 60000
+          example: 30000
+          description: 最終短片長度（毫秒），上限 60000（60 秒）
+
+    ProjectCreated:
+      type: object
+      required: [project_id, status, target_duration_ms, source_key]
+      properties:
+        project_id: { type: string }
+        status: { $ref: "#/components/schemas/ProjectState" }
+        target_duration_ms: { type: integer }
+        source_key:
+          type: string
+          description: 已配置的 Raw bucket object key（上傳完成後才會有物件）
+
+    Project:
+      type: object
+      required: [project_id, status, target_duration_ms]
+      properties:
+        project_id: { type: string }
+        status: { $ref: "#/components/schemas/ProjectState" }
+        title: { type: string }
+        target_duration_ms: { type: integer }
+        source_duration_ms: { type: integer, description: 原始影片長度（毫秒），上傳分析後才有 }
+        source_key: { type: string }
+        latest_timeline_version: { type: integer }
+        latest_render_id: { type: string }
+        latest_artifact_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        error_code: { type: string }
+        error_message: { type: string }
+
+    UploadSessionCreate:
+      type: object
+      required: [filename]
+      properties:
+        filename: { type: string, example: source.mp4 }
+        content_type: { type: string, example: video/mp4 }
+        part_count:
+          type: integer
+          minimum: 1
+          default: 1
+          description: multipart 分段數（前端依檔案大小決定）；與 size_bytes 擇一提供
+        size_bytes: { type: integer, minimum: 0, description: 檔案大小（bytes），供伺服器推算分段數 }
+
+    UploadSession:
+      type: object
+      required: [upload_id, bucket, key, parts]
+      properties:
+        upload_id: { type: string, description: S3 multipart upload id }
+        bucket: { type: string }
+        key: { type: string }
+        parts:
+          type: array
+          items: { $ref: "#/components/schemas/UploadPart" }
+        expires_in_sec: { type: integer, example: 900 }
+
+    UploadPart:
+      type: object
+      required: [part_number, url]
+      properties:
+        part_number: { type: integer, minimum: 1 }
+        url: { type: string, format: uri, description: 該 part 的 presigned PUT URL }
+
+    Highlight:
+      type: object
+      required: [highlight_id, start_ms, end_ms, score]
+      description: highlights.v1 的 highlight 項投影
+      properties:
+        highlight_id: { type: string }
+        start_ms: { type: integer }
+        end_ms: { type: integer }
+        score: { type: number }
+        reason: { type: string }
+        transcript: { type: string }
+        suggested_title: { type: string }
+        selected: { type: boolean }
+        locked: { type: boolean }
+
+    HighlightList:
+      type: object
+      required: [project_id, highlights]
+      properties:
+        project_id: { type: string }
+        source_duration_ms: { type: integer }
+        highlights:
+          type: array
+          items: { $ref: "#/components/schemas/Highlight" }
+
+    TimelineClip:
+      type: object
+      required: [timeline_order, highlight_id, source_start_ms, source_end_ms, timeline_start_ms, timeline_end_ms]
+      properties:
+        timeline_order: { type: integer }
+        highlight_id: { type: string }
+        source_start_ms: { type: integer }
+        source_end_ms: { type: integer }
+        timeline_start_ms: { type: integer }
+        timeline_end_ms: { type: integer }
+
+    Timeline:
+      type: object
+      required: [project_id, version, target_duration_ms, actual_duration_ms, clips]
+      description: timeline.v1 投影；PUT 時作為請求體（伺服器建立新版本）
+      properties:
+        schema_version: { type: string, example: timeline.v1 }
+        project_id: { type: string }
+        version: { type: integer }
+        target_duration_ms: { type: integer }
+        actual_duration_ms: { type: integer }
+        aspect_ratio: { type: string, enum: ["16:9", "9:16", "1:1"] }
+        subtitle_settings: { type: object, additionalProperties: true }
+        effect_settings: { type: object, additionalProperties: true }
+        clips:
+          type: array
+          items: { $ref: "#/components/schemas/TimelineClip" }
+
+    ComposeRequest:
+      type: object
+      properties:
+        target_duration_ms: { type: integer, description: 覆寫目標長度；省略則沿用 Project 設定 }
+        locked_highlight_ids: { type: array, items: { type: string } }
+        excluded_highlight_ids: { type: array, items: { type: string } }
+
+    RenderCreate:
+      type: object
+      description: 提交 Render；預設使用最新 timeline 版本
+      properties:
+        timeline_version: { type: integer, description: 省略則使用 latest_timeline_version }
+
+    RenderCreated:
+      type: object
+      required: [render_id, status]
+      properties:
+        render_id: { type: string }
+        status: { $ref: "#/components/schemas/RenderState" }
+
+    Render:
+      type: object
+      required: [render_id, project_id, status, timeline_version]
+      properties:
+        render_id: { type: string }
+        project_id: { type: string }
+        status: { $ref: "#/components/schemas/RenderState" }
+        current_stage: { type: string }
+        timeline_version: { type: integer }
+        effect_seed: { type: integer }
+        batch_job_id: { type: string }
+        artifact_id: { type: string }
+        error_code: { type: string }
+        error_message: { type: string }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time }
+
+    Artifact:
+      type: object
+      required: [artifact_id, project_id, render_id, status, files]
+      description: artifact.v1 投影
+      properties:
+        artifact_id: { type: string }
+        project_id: { type: string }
+        render_id: { type: string }
+        timeline_version: { type: integer }
+        status: { type: string, enum: [READY, FAILED] }
+        duration_ms: { type: integer }
+        aspect_ratio: { type: string, enum: ["16:9", "9:16", "1:1"] }
+        resolution:
+          type: object
+          properties:
+            width: { type: integer }
+            height: { type: integer }
+        size_bytes: { type: integer }
+        files:
+          type: object
+          properties:
+            video_key: { type: string }
+            preview_key: { type: string }
+            thumbnail_key: { type: string }
+            subtitle_key: { type: string }
+            manifest_key: { type: string }
+        created_at: { type: string, format: date-time }
+
+    DownloadUrl:
+      type: object
+      required: [url, expires_in_sec]
+      properties:
+        url: { type: string, format: uri }
+        expires_in_sec: { type: integer, example: 900 }

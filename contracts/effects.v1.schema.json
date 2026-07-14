@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/effects.v1.schema.json",
+  "title": "effects.v1",
+  "description": "特效計畫（Creative Planning Worker 輸出）。時間一律毫秒（ms）。effect_seed 於每次 Render 建立、重試時沿用相同值以確保輸出可重現（見 demand.md §十二）。",
+  "type": "object",
+  "required": ["schema_version", "effect_seed", "effects"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "effects.v1" },
+    "effect_seed": { "type": "integer", "description": "固定隨機種子；同一 Render 的重試必須沿用，避免每次重新隨機" },
+    "project_id": { "type": "string" },
+    "render_id": { "type": "string" },
+    "effects": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/effect" }
+    }
+  },
+  "$defs": {
+    "effect": {
+      "type": "object",
+      "description": "兩種形狀：ranged（區間特效，如 zoom_in）或 point（點狀轉場，如 flash_transition）。",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "start_ms", "end_ms"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "description": "區間特效類型，如 zoom_in / pan / shake" },
+            "start_ms": { "type": "integer", "minimum": 0 },
+            "end_ms": { "type": "integer", "minimum": 0 },
+            "strength": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "at_ms"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "type": "string", "description": "點狀轉場類型，如 flash_transition / cut" },
+            "at_ms": { "type": "integer", "minimum": 0 },
+            "duration_ms": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    }
+  }
+}
