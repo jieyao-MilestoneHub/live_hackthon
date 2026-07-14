@@ -1,9 +1,11 @@
 """聊天優先分析（階段一～三）單元測試。
 
 用確定性合成資料驗證：清理/重排、洗版標記、每分鐘熱區（mean+1σ）、候選情緒排序、
-輸出 highlights.v1。最下方的 golden 測試以真實 lang-live 匯出格式的固定樣本
-（tests/fixtures/chatlog_golden.sample.csv，自 3654414_log.csv 取樣 150 則聊天 +
-真實雜訊 join/duration/msg_join）驗證巢狀 `c` / ISO 時間解析與整條 parse→detect 流程。
+輸出 highlights.v1。最下方的 golden 測試以 **合成** 固定樣本
+（tests/fixtures/chatlog_golden.sample.csv）重現真實 lang-live 匯出格式（頂層
+msg=="msg"、聊天內容巢狀於 `c`、頂層 time 為 ISO、含 join/duration/msg_join 雜訊、
+檔序反時序），驗證巢狀 `c` / ISO 時間解析與整條 parse→detect 流程。樣本為合成資料、
+不含任何真實使用者資料；要跑真實檔請設 CHATLOG_GOLDEN_CSV 指向本機（未追蹤的）完整 CSV。
 """
 from __future__ import annotations
 
@@ -128,9 +130,9 @@ def test_detect_emits_valid_highlights(chatlog: dict) -> None:
     assert h["highlight_id"] == "hl-001"
 
 
-# --- Golden：真實 lang-live 匯出格式（committed 樣本 + 可用完整檔覆寫） ----------
+# --- Golden：合成樣本重現真實 lang-live 匯出格式（可用完整檔覆寫） ----------------
 
-_GOLDEN_ENV = os.environ.get("CHATLOG_GOLDEN_CSV")          # 指向完整 3654414_log.csv 可覆寫
+_GOLDEN_ENV = os.environ.get("CHATLOG_GOLDEN_CSV")          # 指向本機完整真實 CSV 可覆寫
 _GOLDEN_DEFAULT = Path(__file__).parent / "fixtures" / "chatlog_golden.sample.csv"
 
 
