@@ -5,9 +5,22 @@
 # Account id → globally-unique S3 bucket name suffix.
 data "aws_caller_identity" "current" {}
 
-# Foundation: raw/work/output buckets + VideoJobs DynamoDB table (§5, §6).
-module "foundation" {
-  source  = "../../modules/foundation"
+# Storage: video-editor raw/work/output buckets (demand.md §16).
+module "storage_editor" {
+  source  = "../../modules/storage-editor"
+  project = var.project
+  env     = var.env
+}
+
+# State: VideoEditor DynamoDB single table (demand.md §17).
+module "state_table" {
+  source = "../../modules/state-table"
+  env    = var.env
+}
+
+# Auth: Cognito user pool + public web client for the editor (demand.md §3/§4).
+module "auth" {
+  source  = "../../modules/auth"
   project = var.project
   env     = var.env
 }

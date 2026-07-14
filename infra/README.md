@@ -13,23 +13,51 @@ This scaffolds the `dev` environment; the full target architecture lives in
 ```
 infra/
 ├── environments/
-│   └── dev/                 # root module — wires the three modules below
+│   └── dev/                 # root module — wires the modules below
 ├── modules/
-│   ├── foundation/          # S3 raw/work/output buckets + VideoJobs DynamoDB (§5, §6)
+│   ├── storage-editor/      # video-editor raw/work/output S3 buckets (demand.md §16)
+│   ├── state-table/         # VideoEditor DynamoDB single table (demand.md §17)
+│   ├── auth/                # Cognito user pool + public web client (demand.md §3/§4)
 │   ├── frontend-cdn/        # private S3 + CloudFront (OAC) for Next.js static export
-│   └── backend-apprunner/   # ECR repo + App Runner service for the FastAPI container
+│   ├── backend-apprunner/   # ECR repo for the FastAPI image (App Runner SCP-blocked)
+│   └── backend-lambda/      # Lambda container + API Gateway HTTP API (App Runner alt)
 ├── deploy.sh                # dev deploy runbook (ordering: ECR → push → full apply → frontend)
 └── README.md
 ```
 
 ### Deployment decisions (locked)
 - **Frontend:** Next.js static export → S3 (private) + CloudFront (OAC).
-  CloudFront rewrites 403/404 → `/index.html` (200) so client routes like
-  `/jobs?id=...` resolve.
-- **Backend:** FastAPI container → ECR → AWS App Runner (port 8080, health `/health`).
-- **Foundation:** three video buckets + a single-table `VideoJobs` DynamoDB
-  (PK/SK, GSI1, GSI2, TTL on `expires_at`). Scaffolded now, wired to the
-  pipeline later.
+  CloudFront rewrites 403/404 → `/index.html` (200) so client routes resolve.
+- **Backend:** FastAPI container → ECR → Lambda + API Gateway HTTP API
+  (App Runner is SCP-blocked in the workshop account).
+- **Storage (M1, §16):** three `video-editor-{raw,work,output}` buckets — Block
+  Public Access, BucketOwnerEnforced, versioning, SSE-S3, lifecycle stubs.
+  Input/output are separate buckets to avoid event loops. Replaces the legacy
+  `foundation` `video-{raw,work,output}` buckets (M0 job model).
+- **State (M1, §17):** single-table `VideoEditor` DynamoDB (PK=`PROJECT#{id}`,
+  SK per entity, `GSI1` for id-only render/artifact lookup, TTL on `expires_at`,
+  PAY_PER_REQUEST, PITR). Replaces the legacy `VideoJobs` table.
+  ⚠️ `GSI1` is infra-proposed (demand.md §17 defines no GSI) to serve the §4
+  `GET /renders/{id}` and `GET /artifacts/{id}` endpoints — pending backend
+  (contract owner) sign-off on the `GSI1PK/GSI1SK` convention.
+- **Auth (M1, §3/§4):** Cognito user pool + public SPA client (no secret, SRP).
+  Backend verifies JWTs against the pool's JWKS. No hosted UI in MVP.
+  ⚠️ Cognito is the account's first use of the service — run the SCP probe below
+  before `apply`.
+
+### SCP probe (before first apply of a new service)
+The workshop account's SCP blocks some services (confirmed: App Runner, public
+Lambda Function URLs). S3 and DynamoDB are already proven. **Cognito is new** —
+probe create→delete before relying on it:
+
+```bash
+POOL=$(aws cognito-idp create-user-pool --pool-name scp-probe --query 'UserPool.Id' --output text) \
+  && echo "Cognito allowed: $POOL" \
+  && aws cognito-idp delete-user-pool --user-pool-id "$POOL"
+```
+
+If this fails with an SCP/authorization error, stop and discuss a fallback
+(e.g. a stubbed auth for the MVP demo) before applying the `auth` module.
 
 ## Version pinning (why not the latest?)
 
@@ -84,13 +112,16 @@ cd infra
 ## Outputs
 
 `cloudfront_domain`, `frontend_bucket`, `cloudfront_distribution_id`,
-`apprunner_service_url`, `ecr_repository_url`, plus foundation outputs
-(`raw_bucket`, `work_bucket`, `output_bucket`, `dynamodb_table_name`).
+`backend_api_endpoint`, `ecr_repository_url`, plus M1 storage/state/auth outputs:
+`raw_bucket`, `work_bucket`, `output_bucket` (video-editor buckets),
+`dynamodb_table_name` (`VideoEditor-dev`), and `cognito_user_pool_id`,
+`cognito_user_pool_endpoint`, `cognito_user_pool_client_id`.
 
-## Not yet built (see docs/aws-infra.md §12)
+## Not yet built (M2+, see infra/ROADMAP.md)
 
-The pipeline modules are still TODO: `eventing` (EventBridge + SQS intake),
-`orchestration` (Step Functions), `lambda-light` (light worker pool),
-`batch-heavy` (AWS Batch + FFmpeg / ECR image), `observability`, and `security`
-(KMS keys, per-stage IAM policies). The foundation buckets/table here are the
-inputs those modules will consume.
+The pipeline modules are still TODO: `eventing` (EventBridge on raw `source/`
+ObjectCreated → SQS `analysis-intake` + DLQ), `orchestration` (Step Functions
+analysis & render workflows), `ai-task` worker pool (Lambda), `render-job`
+(AWS Batch + FFmpeg / ECR image), observability, and per-stage IAM/KMS. The
+M1 `storage-editor` buckets and `state-table` are the inputs those modules
+will consume.

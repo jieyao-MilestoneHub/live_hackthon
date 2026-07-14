@@ -55,7 +55,7 @@ docker push "${ECR_URL}:${IMAGE_TAG}"
 # ----------------------------------------------------------------------------
 # 3. Full apply with the real image (creates/updates App Runner, frontend, etc.)
 # ----------------------------------------------------------------------------
-echo "==> [3/5] full terraform apply (App Runner + frontend + foundation)"
+echo "==> [3/5] full terraform apply (frontend + backend + storage/state/auth)"
 terraform -chdir="${ENV_DIR}" apply \
   -var "backend_image=${ECR_URL}:${IMAGE_TAG}" \
   -auto-approve

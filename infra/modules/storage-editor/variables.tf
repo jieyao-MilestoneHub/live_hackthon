@@ -1,6 +1,6 @@
 variable "project" {
   type        = string
-  description = "Project name prefix; used to keep S3 bucket names globally unique while preserving the docs/aws-infra.md §5 video-raw/work/output schema."
+  description = "Project name prefix; keeps the globally-unique S3 bucket names distinct while preserving the demand.md §16 video-editor-{raw,work,output} schema."
 }
 
 variable "env" {

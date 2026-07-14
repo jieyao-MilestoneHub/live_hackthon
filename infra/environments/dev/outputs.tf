@@ -25,23 +25,40 @@ output "ecr_repository_url" {
   value       = module.backend.ecr_repository_url
 }
 
-# --- Foundation (S3 + DynamoDB) ---
+# --- Storage (video-editor S3 buckets, §16) ---
 output "raw_bucket" {
-  description = "Raw upload bucket name."
-  value       = module.foundation.raw_bucket
+  description = "Raw upload bucket name (video-editor-raw)."
+  value       = module.storage_editor.raw_bucket
 }
 
 output "work_bucket" {
-  description = "Intermediate work bucket name."
-  value       = module.foundation.work_bucket
+  description = "Intermediate work bucket name (transcript/analysis/timelines/renders)."
+  value       = module.storage_editor.work_bucket
 }
 
 output "output_bucket" {
-  description = "Output (clips/manifests) bucket name."
-  value       = module.foundation.output_bucket
+  description = "Output bucket name (artifacts)."
+  value       = module.storage_editor.output_bucket
 }
 
+# --- State (DynamoDB VideoEditor single table, §17) ---
 output "dynamodb_table_name" {
-  description = "VideoJobs DynamoDB table name."
-  value       = module.foundation.dynamodb_table_name
+  description = "VideoEditor DynamoDB single-table name."
+  value       = module.state_table.table_name
+}
+
+# --- Auth (Cognito, §3/§4) ---
+output "cognito_user_pool_id" {
+  description = "Cognito user pool id (backend verifies JWTs against this pool)."
+  value       = module.auth.user_pool_id
+}
+
+output "cognito_user_pool_endpoint" {
+  description = "User pool endpoint; JWT issuer = https://<endpoint>."
+  value       = module.auth.user_pool_endpoint
+}
+
+output "cognito_user_pool_client_id" {
+  description = "Public web app client id used by the frontend for login."
+  value       = module.auth.user_pool_client_id
 }
