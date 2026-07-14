@@ -55,6 +55,23 @@ resource "aws_s3_bucket" "this" {
   tags     = merge(var.tags, { Purpose = "video-editor-${each.key}" })
 }
 
+# CORS on the RAW bucket: the browser does presigned multipart PUTs directly to
+# S3 (demand.md §五) and must read the ETag response header to finalize the
+# upload (CompleteMultipartUpload). Origin "*" is safe here — the presigned URL
+# signature is the security boundary, not CORS. Only raw needs this (work/output
+# are server-side only).
+resource "aws_s3_bucket_cors_configuration" "raw" {
+  bucket = aws_s3_bucket.this["raw"].id
+
+  cors_rule {
+    allowed_methods = ["PUT", "GET", "HEAD"]
+    allowed_origins = ["*"]
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}
+
 resource "aws_s3_bucket_public_access_block" "this" {
   for_each                = aws_s3_bucket.this
   bucket                  = each.value.id

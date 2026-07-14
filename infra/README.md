@@ -5,8 +5,9 @@ This scaffolds the `dev` environment; the full target architecture lives in
 [`docs/aws-infra.md`](../docs/aws-infra.md).
 
 - **Region:** `us-east-1` (N. Virginia)
-- **State:** local for now (no remote backend). Add an S3/DynamoDB backend
-  before sharing state across the team.
+- **State:** **remote** — S3 `lang-live-tfstate-979287128595` (key `dev/terraform.tfstate`,
+  versioning/BPA/SSE) + DynamoDB lock `lang-live-tflock`. Bootstrapped out-of-band
+  (aws cli), NOT managed by Terraform. Backend config in `environments/dev/providers.tf`.
 
 ## What's here
 
@@ -20,10 +21,21 @@ infra/
 │   ├── auth/                # Cognito user pool + public web client (demand.md §3/§4)
 │   ├── frontend-cdn/        # private S3 + CloudFront (OAC) for Next.js static export
 │   ├── backend-ecr/         # ECR repo for the FastAPI image (App Runner SCP-blocked)
-│   └── backend-lambda/      # Lambda container + API Gateway HTTP API (App Runner alt)
-├── deploy.sh                # dev deploy runbook (ordering: ECR → push → full apply → frontend)
+│   ├── backend-lambda/      # Lambda container + API Gateway HTTP API (App Runner alt)
+│   ├── analysis-workflow/   # M2.1 worker Lambdas + Analysis Step Functions (Transcribe/Bedrock)
+│   ├── analysis-ingress/    # M2.1 S3→EventBridge→SQS(+DLQ)→idempotent Starter Lambda
+│   ├── render-ecr/          # M2.2 ECR repo for the FFmpeg render image
+│   ├── render-batch/        # M2.2 AWS Batch (Fargate) compute env + queue + job def
+│   └── render-workflow/     # M2.2 Render Step Functions (plan → Batch submitJob.sync)
+├── deploy.sh                # dev deploy runbook (ECR ×2 → push → plan/apply → frontend)
 └── README.md
 ```
+
+> **M2 (real cloud pipeline) is now wired.** The analysis + render planes above
+> add NEW AWS services (Transcribe, Bedrock, SQS, EventBridge, Step Functions,
+> AWS Batch). **Run an SCP create→delete probe for each before the first apply**
+> and enable Bedrock Nova model access in the console. AWS Batch (Fargate) is the
+> highest SCP risk — see `modules/render-batch/main.tf` for the fallback path.
 
 ### Deployment decisions (locked)
 - **Frontend:** Next.js static export → S3 (private) + CloudFront (OAC).

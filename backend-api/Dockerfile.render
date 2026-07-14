@@ -1,0 +1,30 @@
+# FFmpeg render worker container for AWS Batch (demand.md §十三).
+# Replaces render_worker.py's stub encode with real one-pass ffmpeg.
+#
+# Build from the repo ROOT so it can COPY both backend-api/ and contracts/:
+#   docker build -f backend-api/Dockerfile.render -t <ecr-url>:render .
+#
+# The Batch job definition sets: PROJECT_ID, RENDER_ID, USE_INMEMORY=0,
+# RENDER_ENCODER=ffmpeg, DYNAMODB_TABLE, RAW_BUCKET, WORK_BUCKET, OUTPUT_BUCKET,
+# AWS_REGION. Entry runs `python -m workers.render`.
+FROM python:3.11-slim
+
+# System ffmpeg (the real encoder). imageio-ffmpeg (from requirements) is only a
+# local-dev fallback; here /usr/bin/ffmpeg is used.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY backend-api/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY backend-api/ /app/
+COPY contracts/ /app/contracts/
+
+ENV CONTRACTS_DIR=/app/contracts \
+    PYTHONUNBUFFERED=1 \
+    RENDER_ENCODER=ffmpeg
+
+ENTRYPOINT ["python", "-m", "workers.render"]

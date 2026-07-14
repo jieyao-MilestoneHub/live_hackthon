@@ -1,0 +1,68 @@
+variable "name" {
+  type        = string
+  description = "Resource name prefix, e.g. lang-live-analysis-dev."
+}
+
+variable "image_uri" {
+  type        = string
+  description = "Backend ECR container image (…:lambda). Reused for every worker; the handler is chosen per-Lambda via image_config.command."
+}
+
+variable "env" {
+  type        = string
+  description = "Deployment environment (drives the ENV runtime var)."
+}
+
+variable "region" {
+  type        = string
+  description = "AWS region (for Bedrock model ARNs)."
+}
+
+variable "account_id" {
+  type        = string
+  description = "AWS account id (for Bedrock foundation-model ARNs)."
+}
+
+variable "dynamodb_table" {
+  type        = string
+  description = "VideoEditor table name."
+}
+
+variable "table_arn" {
+  type        = string
+  description = "VideoEditor table ARN (index/* derived)."
+}
+
+variable "raw_bucket" {
+  type = string
+}
+
+variable "work_bucket" {
+  type = string
+}
+
+variable "output_bucket" {
+  type = string
+}
+
+variable "bucket_arns" {
+  type        = map(string)
+  description = "Map raw/work/output -> bucket ARN."
+}
+
+variable "highlight_llm_enrich" {
+  type        = bool
+  default     = true
+  description = "Turn on real Bedrock title/reason enrichment in detect_highlights (fail-open if Bedrock model access is not granted)."
+}
+
+variable "bedrock_review_model_id" {
+  type        = string
+  default     = "amazon.nova-micro-v1:0"
+  description = "Bedrock model used for highlight copy (matches app/aws/config nova_review_model_id)."
+}
+
+variable "tags" {
+  type    = map(string)
+  default = {}
+}

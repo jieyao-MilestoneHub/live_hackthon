@@ -21,6 +21,9 @@ __all__ = [
     "UploadSessionCreate",
     "UploadPart",
     "UploadSession",
+    "UploadPartETag",
+    "UploadCompleteRequest",
+    "UploadCompleted",
     "Highlight",
     "HighlightList",
     "TimelineClip",
@@ -96,6 +99,30 @@ class UploadSession(BaseModel):
     key: str
     parts: list[UploadPart] = Field(default_factory=list)
     expires_in_sec: int
+
+
+class UploadPartETag(BaseModel):
+    part_number: int = Field(..., ge=1)
+    etag: str = Field(..., description="ETag returned by the S3 part PUT")
+
+
+class UploadCompleteRequest(BaseModel):
+    """POST /projects/{id}/upload-session/complete request body.
+
+    Finalizes the S3 multipart upload with the ETags the browser collected. This
+    is what actually materializes source.mp4 and triggers the analysis pipeline.
+    """
+
+    upload_id: str
+    parts: list[UploadPartETag] = Field(default_factory=list)
+
+
+class UploadCompleted(BaseModel):
+    """POST /projects/{id}/upload-session/complete 200 response."""
+
+    project_id: str
+    status: ProjectState
+    key: str
 
 
 class Highlight(BaseModel):

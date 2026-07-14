@@ -10,6 +10,7 @@ Deploy target: container image (ECR) -> AWS App Runner (or Lambda Function URL).
 """
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ from jsonschema import ValidationError
 
 from analysis.validate import validate_timeline
 from app.auth import Principal, current_principal
+from app.aws import orchestration
 from app.repository import ProjectRepository, get_repository
 from app.schemas import (
     ComposeRequest,
@@ -32,6 +34,8 @@ from app.schemas import (
     RenderCreate,
     RenderCreated,
     Timeline,
+    UploadCompleted,
+    UploadCompleteRequest,
     UploadSession,
     UploadSessionCreate,
 )
@@ -133,6 +137,32 @@ def create_upload_session(
         {"status": ProjectState.UPLOAD_PENDING.value, "upload_id": session["upload_id"]},
     )
     return UploadSession(**session)
+
+
+@app.post(
+    "/projects/{id}/upload-session/complete",
+    response_model=UploadCompleted,
+    status_code=200,
+)
+def complete_upload_session(
+    id: str,
+    body: UploadCompleteRequest,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> UploadCompleted:
+    """Finalize the S3 multipart upload (submit ETags) and move the project to
+    UPLOADING. This materializes source.mp4 → the S3 event triggers analysis."""
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    key = project["source_key"]
+    parts = [{"part_number": p.part_number, "etag": p.etag} for p in body.parts]
+    try:
+        storage.complete_multipart_upload(key, body.upload_id, parts)
+    except Exception as exc:  # noqa: BLE001 — surface S3 completion errors as 409
+        raise HTTPException(status_code=409, detail=f"multipart completion failed: {exc}")
+    updated = repo.update_project(id, {"status": ProjectState.UPLOADING.value})
+    return UploadCompleted(project_id=id, status=ProjectState(updated["status"]), key=key)
 
 
 @app.get("/projects/{id}", response_model=Project)
@@ -254,13 +284,19 @@ def create_render(
     repo: ProjectRepository = Depends(get_repository),
     storage: Storage = Depends(get_storage),
 ) -> RenderCreated:
-    # MVP shim: run Creative Planning (subtitle/effects/render_spec) inline, then
-    # QUEUED for FFmpeg (M4). TODO(async): enqueue to the ai-task queue.
+    # Control plane must not run FFmpeg (demand.md §十九). When the render
+    # workflow is deployed (RENDER_STATE_MACHINE_ARN set), just create the render
+    # record and StartExecution — creative planning + Batch encode run async.
+    # Offline / no state machine falls back to the inline shim so tests + CLI work.
     if repo.get_project(id) is None:
         raise HTTPException(status_code=404, detail="project not found")
     req = body or RenderCreate()
     try:
-        render = creative_worker.submit_render(repo, storage, id, req.timeline_version)
+        if os.environ.get("RENDER_STATE_MACHINE_ARN"):
+            render = creative_worker.create_render_record(repo, id, req.timeline_version)
+            orchestration.start_render(render["render_id"], id, render["timeline_version"])
+        else:
+            render = creative_worker.submit_render(repo, storage, id, req.timeline_version)
     except InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:

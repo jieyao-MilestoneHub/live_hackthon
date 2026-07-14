@@ -29,5 +29,13 @@ variable "backend_lambda_image" {
   # Placeholder so validate/plan work before the :lambda image is pushed.
   # deploy overrides with the real ECR image: -var backend_lambda_image=<ecr>:lambda
   default     = "public.ecr.aws/lambda/python:3.11"
-  description = "ECR image URI for the backend Lambda container."
+  description = "ECR image URI for the backend Lambda container (also reused for the analysis/render worker Lambdas)."
+}
+
+variable "render_image" {
+  type = string
+  # Placeholder so validate/plan work before the :render image is pushed.
+  # deploy overrides with the real ECR image: -var render_image=<render-ecr>:render
+  default     = "public.ecr.aws/docker/library/busybox:latest"
+  description = "ECR image URI for the FFmpeg render Batch container."
 }

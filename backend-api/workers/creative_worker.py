@@ -39,16 +39,17 @@ def _effect_seed(render_id: str) -> int:
     return int.from_bytes(hashlib.sha256(render_id.encode()).digest()[:4], "big")
 
 
-def submit_render(
+def create_render_record(
     repo: ProjectRepository,
-    storage: Storage,
     project_id: str,
     timeline_version: int | None = None,
 ) -> dict[str, Any]:
-    """Create a render for the project's (frozen) timeline and run creative planning.
+    """Freeze the timeline_version, allocate render_id/artifact_id/effect_seed,
+    write the Render item (CREATED) and flip the Project to RENDER_REQUESTED.
 
-    Raises ``KeyError`` if the project is missing, ``ValueError`` if there is no
-    timeline to render. Returns the final Render item (status QUEUED).
+    This is the control-plane part (no planning, no FFmpeg). The async render
+    workflow then runs creative planning + the Batch encode. Raises ``KeyError``
+    if the project is missing, ``ValueError`` if there is no timeline to render.
     """
     project = repo.get_project(project_id)
     if project is None:
@@ -78,7 +79,19 @@ def submit_render(
         project_id,
         {"status": ProjectState.RENDER_REQUESTED.value, "latest_render_id": render_id},
     )
-    return run(repo, storage, project_id, render_id)
+    return render
+
+
+def submit_render(
+    repo: ProjectRepository,
+    storage: Storage,
+    project_id: str,
+    timeline_version: int | None = None,
+) -> dict[str, Any]:
+    """Create a render record then run creative planning inline (offline / CLI /
+    the control-plane inline shim). Returns the Render item (status QUEUED)."""
+    render = create_render_record(repo, project_id, timeline_version)
+    return run(repo, storage, project_id, render["render_id"])
 
 
 def _advance(

@@ -11,8 +11,10 @@ Project → ARTIFACT_READY。真 FFmpeg 編碼由 Batch 容器替換本模組的
 from __future__ import annotations
 
 import hashlib
+import os
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Protocol
 
 from analysis.validate import validate_artifact
 from app.repository import ProjectRepository
@@ -52,6 +54,52 @@ def _placeholder(kind: str, render_id: str) -> bytes:
     return f"STUB {kind} for {render_id}\n".encode("utf-8")
 
 
+# --- Encoder seam ----------------------------------------------------------
+# The orchestration below (state machine, manifest, uploads) is identical for
+# stub and real; ONLY the encode step differs. Offline / pytest use StubEncoder
+# (placeholder bytes, no source, no ffmpeg); the AWS Batch container sets
+# RENDER_ENCODER=ffmpeg to swap in the real one-pass FFmpeg encoder.
+
+@dataclass
+class EncodeInputs:
+    render_id: str
+    source: bytes | None          # raw source.mp4 bytes (None for stub)
+    timeline: dict[str, Any]
+    subtitle_vtt: str
+    effects: dict[str, Any]
+    render_spec: dict[str, Any]
+
+
+class Encoder(Protocol):
+    needs_source: bool
+
+    def encode(self, inputs: EncodeInputs) -> dict[str, bytes]:
+        """Return {'final': bytes, 'preview': bytes, 'thumbnail': bytes}."""
+
+
+class StubEncoder:
+    """No-ffmpeg placeholder media (keeps offline/tests deterministic)."""
+
+    needs_source = False
+
+    def encode(self, inputs: EncodeInputs) -> dict[str, bytes]:
+        return {
+            "final": _placeholder("final.mp4", inputs.render_id),
+            "preview": _placeholder("preview.mp4", inputs.render_id),
+            "thumbnail": _placeholder("thumbnail.jpg", inputs.render_id),
+        }
+
+
+def get_encoder() -> Encoder:
+    """Pick the encoder. Defaults to stub; the Batch container opts into ffmpeg
+    via RENDER_ENCODER=ffmpeg so existing offline tests are unaffected."""
+    if os.environ.get("RENDER_ENCODER", "stub").strip().lower() == "ffmpeg":
+        from workers.render.ffmpeg_encoder import FFmpegEncoder  # lazy: heavy deps
+
+        return FFmpegEncoder()
+    return StubEncoder()
+
+
 def _advance(
     repo: ProjectRepository,
     project_id: str,
@@ -75,9 +123,11 @@ def run(
     storage: Storage,
     project_id: str,
     render_id: str,
+    encoder: Encoder | None = None,
 ) -> dict[str, Any]:
     """Render a QUEUED render to a published Artifact. Returns the artifact.v1 manifest."""
     settings = get_settings()
+    encoder = encoder or get_encoder()
     project = repo.get_project(project_id)
     render = repo.get_render(project_id, render_id)
     if project is None or render is None:
@@ -100,18 +150,37 @@ def run(
     out = render_spec["outputs"]
     ob = settings.output_bucket
 
-    # --- RENDERING (stub encode; real FFmpeg runs in the Batch container) ---
+    # --- RENDERING: one-pass encode (stub or real FFmpeg per get_encoder) ---
     assert_project_transition(ProjectState(project["status"]), ProjectState.RENDERING)
     repo.update_project(project_id, {"status": ProjectState.RENDERING.value})
     _advance(repo, project_id, render_id, RenderState.RENDERING, "RenderClip", {"started_at": _now_iso()})
 
-    video_bytes = _placeholder("final.mp4", render_id)
+    subtitle_vtt = _to_vtt(subtitle)
+    source_bytes: bytes | None = None
+    effects: dict[str, Any] = {}
+    if getattr(encoder, "needs_source", False):
+        src = render_spec["source"]
+        source_bytes = storage.get_bytes(src["bucket"], src["key"])
+        try:
+            effects = storage.get_json(settings.work_bucket, render_spec["inputs"]["effect_plan_key"])
+        except KeyError:
+            effects = {}
+
+    media = encoder.encode(EncodeInputs(
+        render_id=render_id,
+        source=source_bytes,
+        timeline=timeline,
+        subtitle_vtt=subtitle_vtt,
+        effects=effects,
+        render_spec=render_spec,
+    ))
+    video_bytes = media["final"]
     storage.put_bytes(ob, out["video_key"], video_bytes, "video/mp4")
-    storage.put_bytes(ob, out["preview_key"], _placeholder("preview.mp4", render_id), "video/mp4")
-    storage.put_bytes(ob, out["thumbnail_key"], _placeholder("thumbnail.jpg", render_id), "image/jpeg")
+    storage.put_bytes(ob, out["preview_key"], media["preview"], "video/mp4")
+    storage.put_bytes(ob, out["thumbnail_key"], media["thumbnail"], "image/jpeg")
 
     subtitle_key = settings.artifact_output_key(tenant, project_id, artifact_id, "subtitle.vtt")
-    storage.put_bytes(ob, subtitle_key, _to_vtt(subtitle).encode("utf-8"), "text/vtt")
+    storage.put_bytes(ob, subtitle_key, subtitle_vtt.encode("utf-8"), "text/vtt")
     timeline_key = settings.artifact_output_key(tenant, project_id, artifact_id, "timeline.json")
     storage.put_json(ob, timeline_key, timeline)
     spec_key = settings.artifact_output_key(tenant, project_id, artifact_id, "render-spec.json")

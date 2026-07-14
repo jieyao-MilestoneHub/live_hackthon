@@ -47,6 +47,33 @@ output "dynamodb_table_name" {
   value       = module.state_table.table_name
 }
 
+# --- Analysis plane (M2.1) ---
+output "analysis_state_machine_arn" {
+  description = "Analysis & Composition state machine ARN (manual StartExecution / debugging)."
+  value       = module.analysis_workflow.state_machine_arn
+}
+
+output "analysis_intake_queue_url" {
+  description = "SQS analysis-intake queue URL."
+  value       = module.analysis_ingress.intake_queue_url
+}
+
+output "ai_task_queue_url" {
+  description = "SQS ai-task queue URL (§十九)."
+  value       = module.analysis_ingress.ai_task_queue_url
+}
+
+# --- Render plane (M2.2) ---
+output "render_state_machine_arn" {
+  description = "Artifact Render state machine ARN."
+  value       = module.render_workflow.state_machine_arn
+}
+
+output "render_ecr_repository_url" {
+  description = "ECR repo URL for the FFmpeg render image (push :render here)."
+  value       = module.render_ecr.repository_url
+}
+
 # --- Auth (Cognito, §3/§4) ---
 output "cognito_user_pool_id" {
   description = "Cognito user pool id (backend verifies JWTs against this pool)."

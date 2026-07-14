@@ -39,6 +39,13 @@ class Storage(abc.ABC):
         """Return {upload_id, bucket, key, parts:[{part_number,url}], expires_in_sec}."""
 
     @abc.abstractmethod
+    def complete_multipart_upload(
+        self, key: str, upload_id: str, parts: list[dict[str, Any]]
+    ) -> None:
+        """Finalize a multipart upload in the raw bucket. ``parts`` is a list of
+        ``{part_number, etag}`` collected by the browser."""
+
+    @abc.abstractmethod
     def presigned_get(self, bucket: str, key: str) -> str:
         """Return a presigned GET URL for downloading an object."""
 
@@ -53,6 +60,12 @@ class Storage(abc.ABC):
     @abc.abstractmethod
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         """Write raw bytes to ``bucket/key``. Returns the key."""
+
+    @abc.abstractmethod
+    def get_bytes(self, bucket: str, key: str) -> bytes:
+        """Read the raw bytes at ``bucket/key``. Raises ``KeyError`` if absent.
+
+        Used by the FFmpeg render worker to pull source.mp4 from the raw bucket."""
 
 
 class StubStorage(Storage):
@@ -82,6 +95,13 @@ class StubStorage(Storage):
             "expires_in_sec": self._settings.presign_expiry_sec,
         }
 
+    def complete_multipart_upload(
+        self, key: str, upload_id: str, parts: list[dict[str, Any]]
+    ) -> None:
+        # No real multipart offline; materialize a placeholder object so
+        # object_exists-style checks / downstream reads don't 404.
+        self._blobs[(self._settings.raw_bucket, key)] = b"stub-source"
+
     def presigned_get(self, bucket: str, key: str) -> str:
         return f"http://localhost:8080/stub-download/{bucket}/{key}"
 
@@ -98,6 +118,12 @@ class StubStorage(Storage):
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         self._blobs[(bucket, key)] = data
         return key
+
+    def get_bytes(self, bucket: str, key: str) -> bytes:
+        try:
+            return self._blobs[(bucket, key)]
+        except KeyError:
+            raise KeyError(f"no object at {bucket}/{key}") from None
 
 
 class S3Storage(Storage):
@@ -133,6 +159,22 @@ class S3Storage(Storage):
             "expires_in_sec": self._settings.presign_expiry_sec,
         }
 
+    def complete_multipart_upload(
+        self, key: str, upload_id: str, parts: list[dict[str, Any]]
+    ) -> None:
+        ordered = sorted(parts, key=lambda p: int(p["part_number"]))
+        self._client.complete_multipart_upload(
+            Bucket=self._settings.raw_bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={
+                "Parts": [
+                    {"ETag": p["etag"], "PartNumber": int(p["part_number"])}
+                    for p in ordered
+                ]
+            },
+        )
+
     def presigned_get(self, bucket: str, key: str) -> str:
         return self._client.generate_presigned_url(
             "get_object",
@@ -163,6 +205,17 @@ class S3Storage(Storage):
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         self._client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
         return key
+
+    def get_bytes(self, bucket: str, key: str) -> bytes:
+        from botocore.exceptions import ClientError
+
+        try:
+            resp = self._client.get_object(Bucket=bucket, Key=key)
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+                raise KeyError(f"no object at {bucket}/{key}") from exc
+            raise
+        return resp["Body"].read()
 
 
 @lru_cache(maxsize=1)

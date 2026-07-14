@@ -38,9 +38,92 @@ module "backend" {
   backend_image = var.backend_image
 }
 
-# Backend runtime: Lambda container + public Function URL (App Runner alternative).
+# Backend runtime: Lambda container behind API Gateway HTTP API (App Runner
+# alternative). M2.0: wired to the real DynamoDB table + S3 buckets with
+# USE_INMEMORY=0 so the control plane actually persists.
 module "backend_lambda" {
   source    = "../../modules/backend-lambda"
   name      = "${var.project}-backend-${var.env}"
   image_uri = var.backend_lambda_image
+
+  env            = var.env
+  use_inmemory   = false
+  dynamodb_table = module.state_table.table_name
+  table_arn      = module.state_table.table_arn
+  raw_bucket     = module.storage_editor.raw_bucket
+  work_bucket    = module.storage_editor.work_bucket
+  output_bucket  = module.storage_editor.output_bucket
+  bucket_arns    = module.storage_editor.bucket_arns
+
+  # When set, POST /renders StartExecutions the render workflow (async) instead
+  # of running Creative Planning inline, and grants states:StartExecution.
+  render_state_machine_arn = module.render_workflow.state_machine_arn
+  enable_render_start      = true
+}
+
+# --- Analysis plane (M2.1): S3 event → SQS → Starter → Step Functions ------
+# Worker Lambdas (one backend image, per-handler CMD) + the Standard state
+# machine that drives a real upload to READY_TO_EDIT (demand.md §六/§七/§八).
+module "analysis_workflow" {
+  source     = "../../modules/analysis-workflow"
+  name       = "${var.project}-analysis-${var.env}"
+  image_uri  = var.backend_lambda_image
+  env        = var.env
+  region     = var.region
+  account_id = data.aws_caller_identity.current.account_id
+
+  dynamodb_table = module.state_table.table_name
+  table_arn      = module.state_table.table_arn
+  raw_bucket     = module.storage_editor.raw_bucket
+  work_bucket    = module.storage_editor.work_bucket
+  output_bucket  = module.storage_editor.output_bucket
+  bucket_arns    = module.storage_editor.bucket_arns
+}
+
+module "analysis_ingress" {
+  source            = "../../modules/analysis-ingress"
+  name              = "${var.project}-analysis-${var.env}"
+  image_uri         = var.backend_lambda_image
+  env               = var.env
+  raw_bucket        = module.storage_editor.raw_bucket
+  dynamodb_table    = module.state_table.table_name
+  table_arn         = module.state_table.table_arn
+  state_machine_arn = module.analysis_workflow.state_machine_arn
+}
+
+# --- Render plane (M2.2): POST /renders → StartExecution → Batch FFmpeg -----
+# SCP RISK: probe AWS Batch (Fargate) before apply — see render-batch/main.tf.
+module "render_ecr" {
+  source = "../../modules/render-ecr"
+  name   = "${var.project}-render-${var.env}"
+}
+
+module "render_batch" {
+  source    = "../../modules/render-batch"
+  name      = "${var.project}-render-${var.env}"
+  image_uri = var.render_image
+  env       = var.env
+
+  dynamodb_table = module.state_table.table_name
+  table_arn      = module.state_table.table_arn
+  raw_bucket     = module.storage_editor.raw_bucket
+  work_bucket    = module.storage_editor.work_bucket
+  output_bucket  = module.storage_editor.output_bucket
+  bucket_arns    = module.storage_editor.bucket_arns
+}
+
+module "render_workflow" {
+  source    = "../../modules/render-workflow"
+  name      = "${var.project}-render-${var.env}"
+  image_uri = var.backend_lambda_image
+  env       = var.env
+
+  dynamodb_table = module.state_table.table_name
+  table_arn      = module.state_table.table_arn
+  work_bucket    = module.storage_editor.work_bucket
+  output_bucket  = module.storage_editor.output_bucket
+  bucket_arns    = module.storage_editor.bucket_arns
+
+  batch_job_queue_arn      = module.render_batch.job_queue_arn
+  batch_job_definition_arn = module.render_batch.job_definition_arn
 }

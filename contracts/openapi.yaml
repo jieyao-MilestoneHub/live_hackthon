@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: 浪 LIVE Editor API
-  version: 0.2.0
+  version: 0.3.0
   description: >
     影片高光剪輯「編輯器控制面」API（前後端共用契約）。M1 Project/毫秒版：
     核心實體為 Project、時間一律毫秒（ms）、雙 pipeline（分析組片 + 渲染）。
@@ -65,6 +65,30 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/UploadSession" }
         "404": { description: project 不存在 }
+
+  /projects/{id}/upload-session/complete:
+    post:
+      summary: 完成 S3 multipart 上傳（提交各 part ETag）
+      description: >
+        瀏覽器把各 part PUT 後收集到的 ETag 回傳，伺服器 CompleteMultipartUpload
+        真正生成 source.mp4，並將 Project 推進 UPLOAD_PENDING → UPLOADING；隨後
+        S3 事件觸發分析 pipeline。0.3.0 新增，補齊 §五 的上傳完成握手。
+      operationId: completeUploadSession
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UploadCompleteRequest" }
+      responses:
+        "200":
+          description: 上傳已完成
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadCompleted" }
+        "404": { description: project 不存在 }
+        "409": { description: multipart 完成失敗 }
 
   /projects/{id}:
     get:
@@ -206,6 +230,14 @@ paths:
         "501": { description: 尚未實作（M4） }
 
 components:
+  securitySchemes:
+    # 0.3.0：控制面以 Cognito 使用者池 JWT 授權（API Gateway JWT authorizer）。
+    # 前端登入後在 Authorization: Bearer <id/access token> 帶上。
+    CognitoJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Amazon Cognito user pool JWT（lang-live-editor-dev）
   schemas:
     ProjectState:
       type: string
@@ -308,6 +340,30 @@ components:
       properties:
         part_number: { type: integer, minimum: 1 }
         url: { type: string, format: uri, description: 該 part 的 presigned PUT URL }
+
+    UploadPartETag:
+      type: object
+      required: [part_number, etag]
+      properties:
+        part_number: { type: integer, minimum: 1 }
+        etag: { type: string, description: S3 part PUT 回傳的 ETag }
+
+    UploadCompleteRequest:
+      type: object
+      required: [upload_id, parts]
+      properties:
+        upload_id: { type: string }
+        parts:
+          type: array
+          items: { $ref: "#/components/schemas/UploadPartETag" }
+
+    UploadCompleted:
+      type: object
+      required: [project_id, status, key]
+      properties:
+        project_id: { type: string }
+        status: { $ref: "#/components/schemas/ProjectState" }
+        key: { type: string }
 
     Highlight:
       type: object

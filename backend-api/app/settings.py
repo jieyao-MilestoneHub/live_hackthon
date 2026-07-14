@@ -39,6 +39,10 @@ class Settings:
     def _project_prefix(self, tenant_id: str, project_id: str) -> str:
         return f"tenant={tenant_id}/project={project_id}"
 
+    def transcript_key(self, tenant_id: str, project_id: str) -> str:
+        """Work-bucket key for the normalized transcript.v1 (§十六)."""
+        return f"{self._project_prefix(tenant_id, project_id)}/transcript/transcript.v1.json"
+
     def timeline_key(self, tenant_id: str, project_id: str, version: int) -> str:
         """Work-bucket key for a timeline version (§十六)."""
         return f"{self._project_prefix(tenant_id, project_id)}/timelines/version={version}/timeline.json"
