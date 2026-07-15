@@ -78,6 +78,21 @@ class Storage(abc.ABC):
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         """Write raw bytes to ``bucket/key``. Returns the key."""
 
+    @abc.abstractmethod
+    def head_size(self, bucket: str, key: str) -> int:
+        """Return the byte size of ``bucket/key`` without downloading it.
+
+        Used by the transcribe split step to decide whether a source exceeds
+        Amazon Transcribe's 2GB input limit. Raises ``KeyError`` if absent."""
+
+    @abc.abstractmethod
+    def upload_file(self, bucket: str, key: str, src_path: str, content_type: str | None = None) -> str:
+        """Stream a local file to ``bucket/key`` (no full-object RAM load).
+
+        Counterpart of ``download_to_file`` for writing multi-hundred-MB media
+        segments back to S3 without buffering them in memory like ``put_bytes``.
+        Returns the key."""
+
 
 class StubStorage(Storage):
     """No-AWS stub: fabricates local placeholder URLs, keeps objects in-process."""
@@ -145,6 +160,17 @@ class StubStorage(Storage):
 
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         self._blobs[(bucket, key)] = data
+        return key
+
+    def head_size(self, bucket: str, key: str) -> int:
+        try:
+            return len(self._blobs[(bucket, key)])
+        except KeyError:
+            raise KeyError(f"no object at {bucket}/{key}") from None
+
+    def upload_file(self, bucket: str, key: str, src_path: str, content_type: str | None = None) -> str:
+        with open(src_path, "rb") as fh:
+            self._blobs[(bucket, key)] = fh.read()
         return key
 
 
@@ -269,6 +295,24 @@ class S3Storage(Storage):
 
     def put_bytes(self, bucket: str, key: str, data: bytes, content_type: str) -> str:
         self._client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+        return key
+
+    def head_size(self, bucket: str, key: str) -> int:
+        from botocore.exceptions import ClientError
+
+        try:
+            resp = self._client.head_object(Bucket=bucket, Key=key)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code", "") in ("NoSuchKey", "404", "NotFound"):
+                raise KeyError(f"no object at {bucket}/{key}") from exc
+            raise
+        return int(resp["ContentLength"])
+
+    def upload_file(self, bucket: str, key: str, src_path: str, content_type: str | None = None) -> str:
+        # boto3 managed transfer: streams + multipart, flat memory (safe for
+        # multi-hundred-MB segments), unlike the RAM-buffered put_bytes.
+        extra = {"ContentType": content_type} if content_type else None
+        self._client.upload_file(src_path, bucket, key, ExtraArgs=extra)
         return key
 
 

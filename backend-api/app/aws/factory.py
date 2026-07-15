@@ -7,6 +7,7 @@ boto3 client 僅在 Real* 內建立（lazy）；離線/測試走 Stub*，無需 
 """
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 from app.aws import bedrock_nova, moderation, rekognition, transcribe
@@ -28,12 +29,37 @@ def _deps() -> tuple[Settings, AttributionConfig, bool]:
     return settings, get_attribution_config(), settings.use_inmemory
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @lru_cache(maxsize=1)
 def get_transcriber() -> TranscriberPort:
     settings, config, inmem = _deps()
-    return (
-        transcribe.StubTranscriber(settings, config) if inmem
-        else transcribe.RealTranscriber(settings, config)
+    if inmem:
+        return transcribe.StubTranscriber(settings, config)
+
+    inner = transcribe.RealTranscriber(settings, config)
+    # Wrap the real transcriber so sources over Transcribe's 2GB limit are split
+    # into per-segment jobs and merged back (TRANSCRIBE_SPLIT=0 to opt out).
+    if not _env_bool("TRANSCRIBE_SPLIT", default=True):
+        return inner
+    from app.aws.media_segmenter import DEFAULT_MAX_BYTES, DEFAULT_SEGMENT_CAP_SEC, MediaSegmenter
+    from app.aws.splitting_transcriber import SplittingTranscriber
+    from app.storage import get_storage
+
+    storage = get_storage()
+    return SplittingTranscriber(
+        inner,
+        MediaSegmenter(storage, settings),
+        storage,
+        settings,
+        config,
+        max_bytes=int(os.environ.get("TRANSCRIBE_MAX_BYTES", str(DEFAULT_MAX_BYTES))),
+        segment_cap_sec=int(os.environ.get("TRANSCRIBE_SEGMENT_SEC", str(DEFAULT_SEGMENT_CAP_SEC))),
     )
 
 
