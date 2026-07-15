@@ -287,10 +287,36 @@ export interface TimelineClip {
   timeline_end_ms: number;
 }
 
-/** Subtitle settings (contract: free-form object; sample: { enabled, mode }). */
+/**
+ * One subtitle style layer (字型/字體/顏色/邊框/位置). Mirrors backend
+ * creative/style.py SubtitleStyle. All optional — backend fills preset defaults.
+ * `alignment` uses ASS numpad 1–9 (2 = bottom-center, 8 = top-center).
+ */
+export interface SubtitleStyle {
+  font_family?: string;
+  font_size?: number;
+  bold?: boolean;
+  primary_color?: string;   // #RRGGBB
+  outline_color?: string;   // #RRGGBB
+  outline_width?: number;   // border px
+  shadow?: number;
+  alignment?: number;       // 1–9 (numpad)
+  margin_v?: number;
+  margin_l?: number;
+  margin_r?: number;
+}
+
+/**
+ * Subtitle settings (contract: free-form object). `mode` picks the two-tier
+ * layers: 'both' (default) = 逐字稿 caption + 爆點 keyword; 'caption' = only
+ * transcript; 'keyword' = only punchline keyword. `style` overrides per layer
+ * (or flat = both). `keyword.animation` tunes the pop-in of keyword captions.
+ */
 export interface SubtitleSettings {
   enabled: boolean;
-  mode?: string;
+  mode?: 'both' | 'caption' | 'keyword' | string;
+  style?: (SubtitleStyle & { caption?: SubtitleStyle; keyword?: SubtitleStyle });
+  keyword?: { animation?: { type?: string; duration_ms?: number } };
 }
 
 /** Effect settings (contract: free-form object; sample: { enabled, intensity }). */

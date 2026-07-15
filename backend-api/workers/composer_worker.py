@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from analysis.annotations import build_annotations
 from composer import DEFAULT_ASPECT_RATIO, compose_timeline
 from app.repository import ProjectRepository
 from app.state import ProjectState, assert_project_transition
@@ -41,6 +42,11 @@ def run(
     target_ms = int(target) if target is not None else int(project["target_duration_ms"])
     version = int(project.get("latest_timeline_version") or 0) + 1
 
+    # 起承轉合節拍：由 highlights 就地產生 annotations（chat_window 訊號會對齊 punchline），
+    # 供 NarrativeBeat 策略保埋梗+爆梗、不砍爆點。無 chatlog 時 chat_highlights 留言省略、
+    # beats 仍成立（compose 只需 beats）。
+    annotations = build_annotations(highlights, project_id=project_id)
+
     timeline = compose_timeline(
         project_id=project_id,
         highlights=highlights,
@@ -50,6 +56,7 @@ def run(
         aspect_ratio=aspect_ratio or DEFAULT_ASPECT_RATIO,
         version=version,
         created_by=created_by,
+        annotations=annotations,
     )
 
     repo.put_timeline(project_id, timeline)  # append-only; raises if version exists

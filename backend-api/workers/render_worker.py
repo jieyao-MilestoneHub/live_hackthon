@@ -77,6 +77,7 @@ class EncodeInputs:
     effects: dict[str, Any]
     render_spec: dict[str, Any]
     source_path: str | None = None  # local path to a streamed source.mp4 (real encoder)
+    subtitle: dict[str, Any] | None = None  # subtitle.v1 (+style) for styled ASS burn
 
 
 class Encoder(Protocol):
@@ -197,6 +198,7 @@ def run(
                 subtitle_vtt=subtitle_vtt,
                 effects=effects,
                 render_spec=render_spec,
+                subtitle=subtitle,
             ))
     else:
         media = encoder.encode(EncodeInputs(
@@ -206,6 +208,7 @@ def run(
             subtitle_vtt=subtitle_vtt,
             effects=effects,
             render_spec=render_spec,
+            subtitle=subtitle,
         ))
     video_bytes = media["final"]
     # Fail-closed sanity check: a source-consuming (real) encoder must produce a

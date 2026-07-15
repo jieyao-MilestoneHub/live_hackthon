@@ -18,6 +18,7 @@ from analysis.validate import validate_annotations
 
 # 4 段敘事維度的預設時長比例（可經 params["dimension_ratios"] 覆寫）。
 _BEAT_DIMENSIONS: tuple[str, ...] = ("setup", "reaction_start", "reaction_turn", "punchline")
+_HEAD_DIMENSIONS: tuple[str, ...] = ("setup", "reaction_start", "reaction_turn")
 DEFAULT_DIMENSION_RATIOS: dict[str, float] = {
     "setup": 0.30,
     "reaction_start": 0.25,
@@ -25,6 +26,7 @@ DEFAULT_DIMENSION_RATIOS: dict[str, float] = {
     "punchline": 0.20,
 }
 CHAT_HIGHLIGHT_LIMIT = 3
+MIN_PUNCH_MS = 3000  # 訊號對齊時，punchline 至少保留的長度
 
 
 def _now_iso() -> str:
@@ -36,11 +38,56 @@ def _is_included(h: dict[str, Any]) -> bool:
     return h.get("status") != "excluded" and h.get("selected") is not False
 
 
-def _split_spans(start_ms: int, end_ms: int, ratios: dict[str, float]) -> list[tuple[str, int, int]]:
-    """把 [start,end] 依比例切成連續 4 段（整數 ms、不重疊、最後一段對齊 end）。"""
+def _signal_punch_start(highlight: dict[str, Any], start_ms: int, end_ms: int) -> int | None:
+    """以 chat_window（聊天尖峰＝觀眾看到爆點的反應）對齊 punchline 起點；無訊號回 None。
+
+    夾在 [中點, end−MIN_PUNCH] 內：確保埋梗/反應至少拿到前半、且 punchline 有最短長度。
+    純訊號、決定性；沒有 chat_window 時退回比例切分（維持既有行為）。
+    """
+    cw = highlight.get("chat_window") or {}
+    cw_start = cw.get("start_ms")
+    if cw_start is None:
+        return None
+    length = end_ms - start_ms
+    if length <= 0:
+        return None
+    lo = start_ms + length // 2
+    hi = max(lo, end_ms - MIN_PUNCH_MS)
+    return max(lo, min(int(cw_start), hi))
+
+
+def _split_spans(
+    start_ms: int,
+    end_ms: int,
+    ratios: dict[str, float],
+    punch_start: int | None = None,
+) -> list[tuple[str, int, int]]:
+    """把 [start,end] 切成連續 4 段（整數 ms、不重疊、最後一段對齊 end）。
+
+    ``punch_start`` 給定（訊號對齊）時：setup/reaction_* 依比例填 [start, punch_start]、
+    punchline = [punch_start, end]；否則退回四段比例切分（既有行為）。
+    """
     start_ms, end_ms = int(start_ms), int(end_ms)
+
+    if punch_start is not None:
+        punch_start = max(start_ms, min(int(punch_start), end_ms))
+        head_total = punch_start - start_ms
+        head_ratio_sum = sum(ratios.get(d, 0.0) for d in _HEAD_DIMENSIONS) or 1.0
+        spans: list[tuple[str, int, int]] = []
+        cursor = start_ms
+        for i, dim in enumerate(_HEAD_DIMENSIONS):
+            if i == len(_HEAD_DIMENSIONS) - 1:
+                seg_end = punch_start  # 最後一段對齊 punch_start
+            else:
+                seg_end = min(punch_start, cursor + int(round(head_total * ratios.get(dim, 0.0) / head_ratio_sum)))
+                seg_end = max(seg_end, cursor)
+            spans.append((dim, cursor, seg_end))
+            cursor = seg_end
+        spans.append(("punchline", punch_start, end_ms))
+        return spans
+
     total = max(0, end_ms - start_ms)
-    spans: list[tuple[str, int, int]] = []
+    spans = []
     cursor = start_ms
     for i, dim in enumerate(_BEAT_DIMENSIONS):
         if i == len(_BEAT_DIMENSIONS) - 1:
@@ -51,6 +98,27 @@ def _split_spans(start_ms: int, end_ms: int, ratios: dict[str, float]) -> list[t
         spans.append((dim, cursor, seg_end))
         cursor = seg_end
     return spans
+
+
+def _transcript_index(transcript: dict[str, Any] | None) -> list[tuple[int, int, str]]:
+    """transcript.v1 → [(start_ms, end_ms, text)]（依時間排），供回填台詞。"""
+    if not transcript:
+        return []
+    segs = [
+        (int(s["start_ms"]), int(s["end_ms"]), s.get("text") or "")
+        for s in transcript.get("segments", [])
+        if s.get("text")
+    ]
+    return sorted(segs, key=lambda t: t[0])
+
+
+def _line_for_span(seg_index: list[tuple[int, int, str]], start_ms: int, end_ms: int) -> str | None:
+    """回傳與 [start,end] 時間重疊的逐字稿文字（串接）；無則 None。"""
+    if not seg_index:
+        return None
+    parts = [t for (s, e, t) in seg_index if not (e <= start_ms or s >= end_ms)]
+    joined = "".join(parts).strip()
+    return joined or None
 
 
 def _chat_highlight_messages(
@@ -85,12 +153,17 @@ def _annotate_one(
     highlight: dict[str, Any],
     chatlog_index: dict[str, dict[str, Any]] | None,
     ratios: dict[str, float],
+    seg_index: list[tuple[int, int, str]] | None = None,
 ) -> dict[str, Any]:
     start_ms, end_ms = int(highlight["start_ms"]), int(highlight["end_ms"])
-    spans = _split_spans(start_ms, end_ms, ratios)
+    # 有 chat_window（聊天尖峰）→ 以訊號對齊 punchline 起點；否則比例切分（既有行為）。
+    punch_start = _signal_punch_start(highlight, start_ms, end_ms)
+    spans = _split_spans(start_ms, end_ms, ratios, punch_start)
+    seg_index = seg_index or []
 
     dimensions: list[dict[str, Any]] = [
-        {"dimension": dim, "start_ms": s, "end_ms": e, "text": None} for dim, s, e in spans
+        {"dimension": dim, "start_ms": s, "end_ms": e, "text": _line_for_span(seg_index, s, e)}
+        for dim, s, e in spans
     ]
     # 第 5 維：聊天室精彩留言，span = punchline 段（payoff 區）。
     punch = next((sp for sp in spans if sp[0] == "punchline"), spans[-1])
@@ -108,7 +181,7 @@ def _annotate_one(
         {
             "order": i + 1,
             "beat": dim,
-            "line": None,  # 台詞待 AI 精修（逐字稿）填
+            "line": _line_for_span(seg_index, s, e),  # 有逐字稿則回填台詞，否則 None（待 AI 精修）
             "start_ms": s,
             "end_ms": e,
             "duration_ms": e - s,
@@ -131,11 +204,13 @@ def build_annotations(
     *,
     project_id: str = "",
     params: dict[str, Any] | None = None,
+    transcript: dict[str, Any] | None = None,
     annotation_version: str = "annotation-rule-1.0.0",
 ) -> dict[str, Any]:
     """回傳符合 annotations.v1 的 dict（只標註納入的高光）。
 
     ``project_id`` 由呼叫端提供（highlight 項本身不帶 project_id）；未給時退回 chatlog。
+    ``transcript``（transcript.v1）給定時，依時間重疊回填 dimension.text / beat.line（台詞）。
     """
     p = params or {}
     ratios = {**DEFAULT_DIMENSION_RATIOS, **(p.get("dimension_ratios") or {})}
@@ -145,9 +220,10 @@ def build_annotations(
     chatlog_index: dict[str, dict[str, Any]] | None = None
     if chatlog:
         chatlog_index = {m["message_id"]: m for m in (chatlog.get("messages") or [])}
+    seg_index = _transcript_index(transcript)
 
     annotations = [
-        _annotate_one(h, chatlog_index, ratios) for h in highlights if _is_included(h)
+        _annotate_one(h, chatlog_index, ratios, seg_index) for h in highlights if _is_included(h)
     ]
 
     doc = {
