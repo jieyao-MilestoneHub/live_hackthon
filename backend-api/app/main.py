@@ -120,7 +120,12 @@ def _slugify_title(title: str | None, max_len: int = 32) -> str:
 def _new_project_id(title: str | None = None) -> str:
     ts = datetime.now(_TAIPEI_TZ).strftime("%Y%m%d-%H%M%S")
     slug = _slugify_title(title)
-    suffix = uuid.uuid4().hex[:8]
+    # 48-bit random tail. The timestamp is known-to-the-second and the slug is
+    # often public (video filename), so the suffix is the ONLY unguessable part —
+    # and with no ownership check on /projects/{id} yet, project_id is the de-facto
+    # access capability. Keep it at 12 hex (matches moderation/render ids); a
+    # shorter tail would make ids brute-forceable. See auth TODO before prod.
+    suffix = uuid.uuid4().hex[:12]
     return f"project-{ts}-{slug}-{suffix}" if slug else f"project-{ts}-{suffix}"
 
 
