@@ -1,4 +1,4 @@
-// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.4.0).
+// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.5.0).
 // Base URL from NEXT_PUBLIC_API_BASE_URL (baked at build time). If a call fails
 // — backend unreachable, or a not-yet-built endpoint returns 501 — we fall back
 // to local mock data so the editor still drives a plausible flow in dev.
@@ -51,6 +51,27 @@ export function isMockProjectId(projectId: string): boolean {
   return projectId.startsWith(MOCK_PROJECT_PREFIX);
 }
 
+/**
+ * Error carrying the HTTP status so callers can tell a real client error (413
+ * too large, 415 bad type, 404) from an offline/unreachable backend (status 0).
+ * The mock-fallback code paths only kick in for status 0 / 5xx, never for a 4xx
+ * the server deliberately returned — otherwise a rejected upload would look OK.
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+/** True when the failure is a network/offline condition or a not-yet-built (501) endpoint — safe to fall back to mock data. */
+function isOfflineError(err: unknown): boolean {
+  if (err instanceof ApiError) return err.status === 0 || err.status === 501 || err.status >= 502;
+  return true; // non-ApiError (unexpected) → treat as offline for the dev mock flow
+}
+
 /** Base JSON headers plus `Authorization: Bearer <IdToken>` when logged in. */
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -60,12 +81,18 @@ function authHeaders(): Record<string, string> {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: { ...authHeaders(), ...((init?.headers as Record<string, string>) ?? {}) },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: { ...authHeaders(), ...((init?.headers as Record<string, string>) ?? {}) },
+    });
+  } catch (err) {
+    // Network failure / backend unreachable — status 0 signals "offline".
+    throw new ApiError(`API ${init?.method ?? 'GET'} ${path} network error: ${err}`, 0);
+  }
   if (!res.ok) {
-    throw new Error(`API ${init?.method ?? 'GET'} ${path} failed: ${res.status}`);
+    throw new ApiError(`API ${init?.method ?? 'GET'} ${path} failed: ${res.status}`, res.status);
   }
   return (await res.json()) as T;
 }
@@ -94,12 +121,20 @@ export async function createUploadSession(
   projectId: string,
   body: UploadSessionCreate,
 ): Promise<UploadSession> {
+  // Mock projects (created while offline) never have a real S3 session.
+  if (isMockProjectId(projectId)) {
+    markMockAnalysisStart(projectId);
+    return mockUploadSession(`tenant=demo/project=${projectId}/source/${body.filename}`);
+  }
   try {
     return await request<UploadSession>(
       `/projects/${encodeURIComponent(projectId)}/upload-session`,
       { method: 'POST', body: JSON.stringify(body) },
     );
   } catch (err) {
+    // Real client errors (413 too large, 415 bad type, 404) MUST surface so the
+    // batch UI shows a per-file failure — do not mask them with an offline mock.
+    if (!isOfflineError(err)) throw err;
     console.warn('[api] createUploadSession fell back to mock (backend unreachable):', err);
     // Offline: stamp analysis start so getProject walks the state machine.
     markMockAnalysisStart(projectId);
@@ -112,23 +147,69 @@ function putPart(
   url: string,
   blob: Blob,
   onLoaded: (loaded: number) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('aborted', 'AbortError'));
+      return;
+    }
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', url);
+    const onAbort = () => xhr.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onLoaded(e.loaded);
     };
     xhr.onload = () => {
+      cleanup();
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(xhr.getResponseHeader('ETag') ?? '');
       } else {
         reject(new Error(`part PUT failed: ${xhr.status}`));
       }
     };
-    xhr.onerror = () => reject(new Error('part PUT network error'));
+    xhr.onerror = () => {
+      cleanup();
+      reject(new Error('part PUT network error'));
+    };
+    xhr.onabort = () => {
+      cleanup();
+      reject(new DOMException('aborted', 'AbortError'));
+    };
     xhr.send(blob);
   });
+}
+
+/**
+ * PUT a part with bounded retries. S3 `upload_part` is idempotent (re-PUTting
+ * the same part number overwrites), so retrying is safe. Exponential backoff
+ * (1s·2ⁿ, capped 20s) + jitter. Does not retry on abort.
+ */
+async function putPartWithRetry(
+  url: string,
+  blob: Blob,
+  onLoaded: (loaded: number) => void,
+  signal?: AbortSignal,
+  maxAttempts = 4,
+): Promise<string> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+    try {
+      return await putPart(url, blob, onLoaded, signal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      lastErr = err;
+      if (attempt < maxAttempts - 1) {
+        onLoaded(0); // reset this part's counted progress before the retry
+        const backoff = Math.min(20000, 1000 * 2 ** attempt) + Math.random() * 250;
+        await new Promise((r) => setTimeout(r, backoff));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 function simulateUpload(onProgress?: (pct: number) => void): Promise<void> {
@@ -242,21 +323,32 @@ export async function analyzeProject(
   }
 }
 
+/** Options for uploadToS3. Defaults suit a single file; the batch orchestrator
+ * caps overall in-flight PUTs via fileConcurrency × partConcurrency (3 × 2 = 6). */
+export interface UploadToS3Options {
+  /** Parts PUT concurrently for THIS file. Default 2. */
+  partConcurrency?: number;
+  /** Abort in-flight and pending part PUTs (e.g. user cancels the batch). */
+  signal?: AbortSignal;
+}
+
 /**
  * Browser direct upload to the S3 Raw bucket using the session's presigned parts,
  * followed by the multipart-complete handshake.
  *
- * Splits the file evenly across parts, PUTs each with progress, collects the
- * per-part ETags (S3 returns them in the `ETag` response header — value is
- * usually double-quoted, which S3's CompleteMultipartUpload expects, so we keep
- * it verbatim and only trim whitespace), then calls completeUploadSession to
- * finalize the object and trigger analysis.
+ * Splits the file evenly across parts and PUTs up to `partConcurrency` at a time
+ * (each with retry/backoff), aggregating progress from a per-part loaded map so
+ * the percentage stays correct under parallelism. Collects the per-part ETags (S3
+ * returns them in the `ETag` response header — usually double-quoted, which S3's
+ * CompleteMultipartUpload expects, so we keep it verbatim and only trim), then
+ * calls completeUploadSession to finalize the object and trigger analysis.
  */
 export async function uploadToS3(
   projectId: string,
   session: UploadSession,
   file: File,
   onProgress?: (pct: number) => void,
+  opts?: UploadToS3Options,
 ): Promise<void> {
   const isMock =
     session.upload_id.startsWith('mock_upload_') ||
@@ -269,19 +361,42 @@ export async function uploadToS3(
 
   const parts = [...session.parts].sort((a, b) => a.part_number - b.part_number);
   const partSize = Math.ceil(file.size / parts.length);
-  const completed: UploadPartETag[] = [];
-  let uploadedBytes = 0;
+  const completed: UploadPartETag[] = new Array(parts.length);
+  const loadedByPart = new Map<number, number>();
+  const reportProgress = () => {
+    let total = 0;
+    for (const v of loadedByPart.values()) total += v;
+    const pct = file.size > 0 ? (total / file.size) * 100 : 100;
+    onProgress?.(Math.min(100, Math.round(pct)));
+  };
 
-  for (const part of parts) {
-    const start = (part.part_number - 1) * partSize;
-    const blob = file.slice(start, Math.min(start + partSize, file.size));
-    const etag = await putPart(part.url, blob, (loaded) => {
-      const pct = file.size > 0 ? ((uploadedBytes + loaded) / file.size) * 100 : 100;
-      onProgress?.(Math.min(100, Math.round(pct)));
-    });
-    completed.push({ part_number: part.part_number, etag: (etag ?? '').trim() });
-    uploadedBytes += blob.size;
-  }
+  const partConcurrency = Math.max(1, opts?.partConcurrency ?? 2);
+  let nextIdx = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      if (opts?.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+      const idx = nextIdx++;
+      if (idx >= parts.length) return;
+      const part = parts[idx];
+      const start = (part.part_number - 1) * partSize;
+      const blob = file.slice(start, Math.min(start + partSize, file.size));
+      const etag = await putPartWithRetry(
+        part.url,
+        blob,
+        (loaded) => {
+          loadedByPart.set(part.part_number, loaded);
+          reportProgress();
+        },
+        opts?.signal,
+      );
+      loadedByPart.set(part.part_number, blob.size); // pin to exact size on success
+      reportProgress();
+      completed[idx] = { part_number: part.part_number, etag: (etag ?? '').trim() };
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(partConcurrency, parts.length) }, () => worker());
+  await Promise.all(workers);
   onProgress?.(100);
 
   // Finalize the multipart upload — materializes source.mp4 + triggers analysis.

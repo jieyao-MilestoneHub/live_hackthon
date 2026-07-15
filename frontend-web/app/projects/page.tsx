@@ -155,7 +155,7 @@ function UploadRegion({
         filename: file.name,
         content_type: file.type || 'video/mp4',
         size_bytes: file.size,
-        part_count: 1,
+        // No part_count: the server derives it from size_bytes (real multipart).
       });
       // uploadToS3 PUTs each part, collects ETags, then POSTs the multipart
       // -complete handshake — which materializes source.mp4. For a chat project

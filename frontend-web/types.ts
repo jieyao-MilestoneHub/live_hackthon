@@ -1,4 +1,4 @@
-// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.4.0).
+// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.5.0).
 // Project / millisecond model (M1). Source of truth: ../contracts/openapi.yaml
 // and ../contracts/*.v1.schema.json — keep in sync when the contract changes.
 // All times are integers in milliseconds (ms). Core entity is Project (not job).
@@ -76,13 +76,16 @@ export interface Project {
   error_message?: string;
 }
 
-/** Request body for POST /projects/{id}/upload-session (openapi: UploadSessionCreate). */
+/** Request body for POST /projects/{id}/upload-session (openapi: UploadSessionCreate).
+ * v0.5.0 (batch): send `size_bytes` — the server derives the part count and enforces
+ * the per-file size cap. `part_count` is deprecated (kept for backward compatibility). */
 export interface UploadSessionCreate {
   filename: string;
   content_type?: string;
-  /** multipart part count (frontend derives from file size); or provide size_bytes. */
-  part_count?: number;
+  /** File size in bytes — primary input; server derives part count + enforces the cap. */
   size_bytes?: number;
+  /** @deprecated Provide size_bytes instead. If set, overrides the size-derived count. */
+  part_count?: number;
 }
 
 /** One multipart part's presigned PUT URL (openapi: UploadPart). */

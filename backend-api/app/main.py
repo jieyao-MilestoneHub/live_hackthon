@@ -80,6 +80,21 @@ def _new_project_id() -> str:
     return f"project-{uuid.uuid4().hex[:12]}"
 
 
+# Accepted video containers for the batch upload path. Enforced in
+# create_upload_session so the presign gate rejects non-video files up front.
+_ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+
+
+def _is_allowed_video(content_type: str | None, filename: str | None) -> bool:
+    """A file passes if its content_type is video/* OR its extension is allowed."""
+    if content_type and content_type.strip().lower().startswith("video/"):
+        return True
+    if filename:
+        name = filename.strip().lower()
+        return any(name.endswith(ext) for ext in _ALLOWED_VIDEO_EXTS)
+    return False
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "version": VERSION}
@@ -139,6 +154,26 @@ def create_upload_session(
         assert_project_transition(ProjectState(project["status"]), ProjectState.UPLOAD_PENDING)
     except InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+    settings = get_settings()
+    # Per-file size cap (default 10GB). Enforced here because the browser uploads
+    # bytes straight to S3 via presigned URLs — this is the only server-side gate.
+    if body.size_bytes is not None and body.size_bytes > settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"file too large: {body.size_bytes} bytes exceeds the "
+                f"{settings.max_upload_bytes}-byte per-file limit"
+            ),
+        )
+    if not _is_allowed_video(body.content_type, body.filename):
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                "unsupported media type: expected a video (content_type video/* or "
+                f"extension in {sorted(_ALLOWED_VIDEO_EXTS)})"
+            ),
+        )
 
     part_count = resolve_part_count(body.part_count, body.size_bytes)
     session = storage.create_upload_session(

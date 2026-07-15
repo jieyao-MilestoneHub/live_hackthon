@@ -24,7 +24,23 @@ class TranscriberPort(Protocol):
         language_code: str,
         max_speakers: int,
     ) -> dict[str, Any]:
-        """回傳 transcript.v1 dict（segments 帶匿名 ``speaker=spk_N``、時間毫秒）。"""
+        """回傳 transcript.v1 dict（segments 帶匿名 ``speaker=spk_N``、時間毫秒）。
+        同步輔助（本機/測試）；部署管線改用下方非阻塞的 start/poll 拆分。"""
+        ...
+
+    def start_transcription(
+        self,
+        project_id: str,
+        media_uri: str,
+        *,
+        language_code: str,
+        max_speakers: int,
+    ) -> None:
+        """啟動非同步轉錄工作即返回（Step Functions 負責輪詢）。冪等：重複啟動視為已啟動。"""
+        ...
+
+    def poll_transcription(self, project_id: str, *, language_code: str) -> dict[str, Any]:
+        """單次狀態檢查，回傳 {status, transcript?, reason?}；status ∈ IN_PROGRESS/COMPLETED/FAILED。"""
         ...
 
 

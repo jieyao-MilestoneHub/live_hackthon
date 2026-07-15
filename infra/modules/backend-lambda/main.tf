@@ -112,6 +112,11 @@ resource "aws_lambda_function" "backend" {
   timeout       = var.timeout
   architectures = ["x86_64"]
 
+  # -1 = unreserved. Set ≥30 for the batch demo so upload control-plane calls
+  # (create-session / complete) can't be starved by pipeline Lambdas sharing the
+  # account concurrency pool.
+  reserved_concurrent_executions = var.reserved_concurrency
+
   # Runtime config for app/settings.py. AWS_REGION is reserved/injected by the
   # Lambda runtime, so we must NOT set it here. Names must match the REAL
   # resources (…-dev-<acct>) — the app defaults (VideoEditor / video-editor-*)
@@ -125,6 +130,8 @@ resource "aws_lambda_function" "backend" {
       WORK_BUCKET              = var.work_bucket
       OUTPUT_BUCKET            = var.output_bucket
       PRESIGN_EXPIRY_SEC       = tostring(var.presign_expiry_sec)
+      MAX_UPLOAD_BYTES         = tostring(var.max_upload_bytes)
+      MAX_BATCH_FILES          = tostring(var.max_batch_files)
       RENDER_STATE_MACHINE_ARN = var.render_state_machine_arn
     }
   }

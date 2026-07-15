@@ -56,6 +56,18 @@ variable "highlight_llm_enrich" {
   description = "Turn on real Bedrock title/reason enrichment in detect_highlights (fail-open if Bedrock model access is not granted)."
 }
 
+variable "transcribe_poll_wait_sec" {
+  type        = number
+  default     = 30
+  description = "Seconds the state machine waits between Amazon Transcribe status polls (Wait → GetTranscription loop)."
+}
+
+variable "worker_reserved_concurrency" {
+  type        = number
+  default     = -1
+  description = "Reserved concurrent executions applied to EACH analysis worker Lambda. -1 = unreserved (default). Async transcribe keeps peak concurrency low, so leave -1 unless a low-cap account needs the pipeline pool fenced off (verify Service Quotas L-B99A9384 first)."
+}
+
 variable "bedrock_review_model_id" {
   type        = string
   default     = "amazon.nova-micro-v1:0"

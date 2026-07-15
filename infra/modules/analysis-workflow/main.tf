@@ -8,16 +8,18 @@
 # S3 / DynamoDB (SFN payload limit is 256 KB).
 
 locals {
-  # Per-worker sizing. transcribe blocks on the real Transcribe job (poll loop),
-  # so it gets the 15-min max timeout + more memory.
+  # Per-worker sizing. transcribe/poll_transcription are now NON-blocking (start
+  # the job, then Step Functions Waits + polls), so neither needs the old 15-min
+  # timeout or a held concurrency slot.
   workers = {
-    validate_source   = { timeout = 60, memory = 256 }
-    probe_metadata    = { timeout = 60, memory = 256 }
-    transcribe        = { timeout = 900, memory = 1024 }
-    detect_highlights = { timeout = 300, memory = 512 }
-    compose_timeline  = { timeout = 120, memory = 512 }
-    mark_ready        = { timeout = 30, memory = 256 }
-    mark_failed       = { timeout = 30, memory = 256 }
+    validate_source    = { timeout = 60, memory = 256 }
+    probe_metadata     = { timeout = 60, memory = 256 }
+    transcribe         = { timeout = 60, memory = 512 }
+    poll_transcription = { timeout = 60, memory = 512 }
+    detect_highlights  = { timeout = 300, memory = 512 }
+    compose_timeline   = { timeout = 120, memory = 512 }
+    mark_ready         = { timeout = 30, memory = 256 }
+    mark_failed        = { timeout = 30, memory = 256 }
   }
 
   worker_env = {
@@ -109,6 +111,11 @@ resource "aws_lambda_function" "worker" {
   timeout       = each.value.timeout
   architectures = ["x86_64"]
 
+  # -1 = unreserved (default). Async transcribe means workers no longer block, so
+  # peak concurrency is low; this lever exists only if a low-cap account needs the
+  # pipeline pool protected. See var.worker_reserved_concurrency.
+  reserved_concurrent_executions = var.worker_reserved_concurrency
+
   image_config {
     command = ["workers.lambda_handlers.${each.key}"]
   }
@@ -189,6 +196,10 @@ locals {
         Catch      = local.catch
         Next       = "StartTranscription"
       }
+      # Async transcription: START the job (returns immediately), then Wait/Poll
+      # in the state machine until COMPLETED/FAILED. This removes the old ~10-min
+      # in-Lambda poll cap (long videos now transcribe fully) and frees the
+      # concurrency slot the blocking Lambda used to hold for the whole job.
       StartTranscription = {
         Type       = "Task"
         Resource   = "arn:aws:states:::lambda:invoke"
@@ -196,7 +207,37 @@ locals {
         ResultPath = null
         Retry      = local.retry
         Catch      = local.catch
-        Next       = "DetectHighlights"
+        Next       = "WaitForTranscription"
+      }
+      WaitForTranscription = {
+        Type    = "Wait"
+        Seconds = var.transcribe_poll_wait_sec
+        Next    = "GetTranscription"
+      }
+      GetTranscription = {
+        Type       = "Task"
+        Resource   = "arn:aws:states:::lambda:invoke"
+        Parameters = { FunctionName = aws_lambda_function.worker["poll_transcription"].arn, "Payload.$" = "$" }
+        ResultPath = "$.transcription"
+        Retry      = local.retry
+        Catch      = local.catch
+        Next       = "TranscriptionComplete"
+      }
+      TranscriptionComplete = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.transcription.Payload.status"
+            StringEquals = "COMPLETED"
+            Next         = "DetectHighlights"
+          },
+          {
+            Variable     = "$.transcription.Payload.status"
+            StringEquals = "FAILED"
+            Next         = "MarkFailed"
+          },
+        ]
+        Default = "WaitForTranscription"
       }
       DetectHighlights = {
         Type       = "Task"

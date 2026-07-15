@@ -123,6 +123,7 @@ resource "aws_batch_job_definition" "render" {
       { type = "VCPU", value = var.job_vcpu },
       { type = "MEMORY", value = var.job_memory },
     ]
+    ephemeralStorage             = { sizeInGiB = var.ephemeral_storage_gib }
     networkConfiguration         = { assignPublicIp = "ENABLED" }
     fargatePlatformConfiguration = { platformVersion = "LATEST" }
     # PROJECT_ID / RENDER_ID are injected per-job by the render Step Functions

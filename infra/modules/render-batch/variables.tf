@@ -40,7 +40,13 @@ variable "bucket_arns" {
 variable "max_vcpus" {
   type        = number
   default     = 8
-  description = "Fargate compute environment max vCPUs (cost cap)."
+  description = "Fargate compute environment max vCPUs (cost cap). At job_vcpu=2, this ÷ 2 = max concurrent render jobs. NOTE: this is only a ceiling — actual scaling is still bounded by the account's Fargate vCPU service quota (L-3032A538), so verify that quota before relying on a high value."
+}
+
+variable "ephemeral_storage_gib" {
+  type        = number
+  default     = 50
+  description = "Fargate task ephemeral storage (GiB, 21–200). The default 20 GiB is tight for a 10GB source streamed to disk plus temp segments."
 }
 
 variable "job_vcpu" {

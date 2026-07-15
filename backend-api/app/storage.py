@@ -16,9 +16,11 @@ from typing import Any
 
 from app.settings import Settings, get_settings
 
-# S3 requires every part except the last to be >= 5 MiB. Use 8 MiB as the
-# default chunk when deriving a part count from a file size.
-_PART_SIZE_BYTES = 8 * 1024 * 1024
+# S3 requires every part except the last to be >= 5 MiB. Use 16 MiB as the
+# default chunk when deriving a part count from a file size: a 10GB file →
+# 640 parts (well under the 10,000-part cap; headroom to ~156GB), and the
+# presign response (~640 URLs) stays well under Lambda's 6MB sync payload.
+_PART_SIZE_BYTES = 16 * 1024 * 1024
 _MAX_PARTS = 10_000
 
 

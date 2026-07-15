@@ -83,30 +83,53 @@ def probe_metadata(event: dict[str, Any], context: Any = None) -> dict[str, Any]
 
 
 def transcribe(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """Run Amazon Transcribe (real) and write transcript.v1 to the work bucket."""
+    """Step Functions 'StartTranscription' task: START the async Amazon Transcribe
+    job and return immediately. The workflow then Waits + polls via
+    ``poll_transcription`` — the Lambda no longer blocks for the whole job (the old
+    ~10-min in-Lambda poll loop capped long videos and held a concurrency slot)."""
     settings = get_settings()
     config = get_attribution_config()
     project_id = _project_id(event)
     project = _require_project(project_id)
-    tenant_id = project.get("tenant_id") or "unknown"
     bucket = project.get("source_bucket") or settings.raw_bucket
     key = project.get("source_key")
     media_uri = f"s3://{bucket}/{key}"
 
-    transcriber = factory.get_transcriber()  # Real when USE_INMEMORY=0
-    transcript = transcriber.transcribe(
+    factory.get_transcriber().start_transcription(  # Real when USE_INMEMORY=0
         project_id,
         media_uri,
         language_code=config.language_code,
         max_speakers=config.max_speaker_labels,
     )
-    transcript_key = settings.transcript_key(tenant_id, project_id)
-    get_storage().put_json(settings.work_bucket, transcript_key, transcript)
-    return {
-        "project_id": project_id,
-        "transcript_key": transcript_key,
-        "duration_ms": transcript.get("duration_ms"),
-    }
+    return {"project_id": project_id, "status": "STARTED"}
+
+
+def poll_transcription(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    """Step Functions 'GetTranscription' task: one non-blocking status check. On
+    COMPLETED, write transcript.v1 to the work bucket and report COMPLETED so the
+    Choice advances to DetectHighlights; otherwise report IN_PROGRESS (→ Wait loop)
+    or FAILED (→ MarkFailed)."""
+    settings = get_settings()
+    config = get_attribution_config()
+    project_id = _project_id(event)
+    project = _require_project(project_id)
+    tenant_id = project.get("tenant_id") or "unknown"
+
+    result = factory.get_transcriber().poll_transcription(
+        project_id, language_code=config.language_code
+    )
+    status = result["status"]
+    if status == "COMPLETED":
+        transcript = result["transcript"]
+        transcript_key = settings.transcript_key(tenant_id, project_id)
+        get_storage().put_json(settings.work_bucket, transcript_key, transcript)
+        return {
+            "project_id": project_id,
+            "status": "COMPLETED",
+            "transcript_key": transcript_key,
+            "duration_ms": transcript.get("duration_ms"),
+        }
+    return {"project_id": project_id, "status": status, "reason": result.get("reason")}
 
 
 def detect_highlights(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
@@ -229,47 +252,57 @@ def starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
     Derives project_id from the key and StartExecution's the analysis workflow
     with a deterministic name (duplicate events collapse to one run)."""
     started: list[dict[str, Any]] = []
+    # ReportBatchItemFailures: only the records that actually threw are re-driven,
+    # instead of the whole SQS batch (batch_size=10). start_analysis is idempotent
+    # (ExecutionAlreadyExists → no-op), so a redriven record is safe.
+    failures: list[dict[str, str]] = []
     for record in event.get("Records", []):
-        body = record.get("body")
-        detail = json.loads(body) if isinstance(body, str) else (body or {})
-        detail = detail.get("detail", detail)  # unwrap EventBridge envelope
-        bucket = (detail.get("bucket") or {}).get("name")
-        obj = detail.get("object") or {}
-        key = obj.get("key")
-        version_id = obj.get("version-id") or obj.get("versionId")
-        parsed = _parse_source_key(key)
-        if not parsed:
-            continue
-        tenant_id, project_id = parsed
-        # analysis_source gate: chat-LOG projects produce highlights via the
-        # synchronous POST /analyze (chat volume), NOT this auto video→Transcribe
-        # path. Skipping StartExecution prevents the Transcribe run from clobbering
-        # chat highlights or flipping the project to FAILED on the
-        # ANALYZING→COMPOSING transition assert. Video-only projects
-        # (analysis_source="transcribe", the default) proceed as before.
-        project = get_repository().get_project(project_id)
-        if project and project.get("analysis_source") == "chat":
-            log.info(
-                "starter: project %s analysis_source=chat; skipping auto Transcribe StartExecution",
-                project_id,
+        message_id = record.get("messageId")
+        try:
+            body = record.get("body")
+            detail = json.loads(body) if isinstance(body, str) else (body or {})
+            detail = detail.get("detail", detail)  # unwrap EventBridge envelope
+            bucket = (detail.get("bucket") or {}).get("name")
+            obj = detail.get("object") or {}
+            key = obj.get("key")
+            version_id = obj.get("version-id") or obj.get("versionId")
+            parsed = _parse_source_key(key)
+            if not parsed:
+                continue
+            tenant_id, project_id = parsed
+            # analysis_source gate: chat-LOG projects produce highlights via the
+            # synchronous POST /analyze (chat volume), NOT this auto video→Transcribe
+            # path. Skipping StartExecution prevents the Transcribe run from clobbering
+            # chat highlights or flipping the project to FAILED on the
+            # ANALYZING→COMPOSING transition assert. Video-only projects
+            # (analysis_source="transcribe", the default) proceed as before.
+            project = get_repository().get_project(project_id)
+            if project and project.get("analysis_source") == "chat":
+                log.info(
+                    "starter: project %s analysis_source=chat; skipping auto Transcribe StartExecution",
+                    project_id,
+                )
+                continue
+            if not version_id:
+                # Raw bucket versioning should always supply version-id; without it
+                # the execution name falls back to '{project_id}-v0', so a later
+                # re-upload to the same project would be swallowed as a duplicate
+                # rather than re-analyzed.
+                log.warning(
+                    "starter: missing version_id for project %s (key=%s); "
+                    "re-upload dedupe may swallow a future run",
+                    project_id,
+                    key,
+                )
+            exec_arn = orchestration.start_analysis(
+                project_id, tenant_id=tenant_id, bucket=bucket, key=key, version_id=version_id
             )
-            continue
-        if not version_id:
-            # Raw bucket versioning should always supply version-id; without it
-            # the execution name falls back to '{project_id}-v0', so a later
-            # re-upload to the same project would be swallowed as a duplicate
-            # rather than re-analyzed.
-            log.warning(
-                "starter: missing version_id for project %s (key=%s); "
-                "re-upload dedupe may swallow a future run",
-                project_id,
-                key,
-            )
-        exec_arn = orchestration.start_analysis(
-            project_id, tenant_id=tenant_id, bucket=bucket, key=key, version_id=version_id
-        )
-        started.append({"project_id": project_id, "execution_arn": exec_arn})
-    return {"started": started}
+            started.append({"project_id": project_id, "execution_arn": exec_arn})
+        except Exception:  # noqa: BLE001 — isolate one bad record from the batch
+            log.exception("starter: record %s failed; will be retried", message_id)
+            if message_id:
+                failures.append({"itemIdentifier": message_id})
+    return {"started": started, "batchItemFailures": failures}
 
 
 def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:

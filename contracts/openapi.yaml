@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: 浪 LIVE Editor API
-  version: 0.4.0
+  version: 0.5.0
   description: >
     影片高光剪輯「編輯器控制面」API（前後端共用契約）。M1 Project/毫秒版：
     核心實體為 Project、時間一律毫秒（ms）、雙 pipeline（分析組片 + 渲染）。
@@ -50,6 +50,8 @@ paths:
       description: >
         回傳 multipart upload_id 與各 part 的 presigned URL；瀏覽器直接對 S3 Raw
         bucket 上傳（不經過 API）。狀態 CREATED → UPLOAD_PENDING。
+        0.5.0：批次上傳統一走此路徑（單檔=批次1），前端只送 size_bytes、由伺服器推算
+        分段數；伺服器強制單檔上限（預設 10GB，超過回 413）與影片型別（非 video 回 415）。
       operationId: createUploadSession
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
@@ -65,6 +67,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/UploadSession" }
         "404": { description: project 不存在 }
+        "413": { description: 檔案超過單檔上限（預設 10GB） }
+        "415": { description: 非支援的影片型別（content_type 非 video/* 且副檔名不在允許清單） }
 
   /projects/{id}/upload-session/complete:
     post:
@@ -464,16 +468,23 @@ components:
 
     UploadSessionCreate:
       type: object
-      required: [filename]
+      required: [filename, size_bytes]
       properties:
         filename: { type: string, example: source.mp4 }
         content_type: { type: string, example: video/mp4 }
+        size_bytes:
+          type: integer
+          minimum: 0
+          description: >
+            檔案大小（bytes）。0.5.0 起為主要輸入：伺服器據此推算 multipart 分段數，
+            並強制單檔上限（預設 10GB，超過回 413）。
         part_count:
           type: integer
           minimum: 1
-          default: 1
-          description: multipart 分段數（前端依檔案大小決定）；與 size_bytes 擇一提供
-        size_bytes: { type: integer, minimum: 0, description: 檔案大小（bytes），供伺服器推算分段數 }
+          deprecated: true
+          description: >
+            （已棄用）multipart 分段數。保留以相容舊客戶端；一旦提供會覆蓋 size_bytes
+            的推算。批次上傳請改送 size_bytes。
 
     UploadSession:
       type: object
@@ -485,7 +496,7 @@ components:
         parts:
           type: array
           items: { $ref: "#/components/schemas/UploadPart" }
-        expires_in_sec: { type: integer, example: 900 }
+        expires_in_sec: { type: integer, example: 21600 }
 
     UploadPart:
       type: object
