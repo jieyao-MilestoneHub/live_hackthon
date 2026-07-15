@@ -36,6 +36,42 @@ class RenderState(str, Enum):
     FAILED = "FAILED"
 
 
+class ModerationStatus(str, Enum):
+    """Content-moderation verdict — an axis ORTHOGONAL to the Project lifecycle
+    (a project can be ANALYZING/PENDING or READY_TO_EDIT/FLAGGED). Deliberately
+    NOT part of ``_PROJECT_TRANSITIONS`` so the gate is a single-field check, not
+    lifecycle reasoning. Kept in lockstep with ``contracts/openapi.yaml``.
+
+        PENDING     — not yet scanned (default on create).
+        ALLOWED     — auto-scan found nothing above the flag threshold.
+        FLAGGED     — above the flag threshold; may edit, but publish needs review.
+        BLOCKED     — above the block threshold; hard-gated from analyze/render/download.
+        OVERRIDDEN  — a moderator manually allowed it (audit-logged).
+    """
+
+    PENDING = "PENDING"
+    ALLOWED = "ALLOWED"
+    FLAGGED = "FLAGGED"
+    BLOCKED = "BLOCKED"
+    OVERRIDDEN = "OVERRIDDEN"
+
+
+# Verdicts that permit publishing (render/download). FLAGGED needs a moderator
+# review→OVERRIDDEN first; BLOCKED is a hard stop.
+_MODERATION_PUBLISHABLE = {ModerationStatus.ALLOWED, ModerationStatus.OVERRIDDEN}
+
+
+def moderation_allows_publish(status: str | None) -> bool:
+    """True if a project's moderation verdict permits render/download. Unknown or
+    missing status is treated as PENDING (not publishable) — fail-safe."""
+    if not status:
+        return False
+    try:
+        return ModerationStatus(status) in _MODERATION_PUBLISHABLE
+    except ValueError:
+        return False
+
+
 # Any non-terminal Project state may transition to FAILED (pipeline error).
 _PROJECT_TRANSITIONS: dict[ProjectState, set[ProjectState]] = {
     ProjectState.CREATED: {ProjectState.UPLOAD_PENDING},

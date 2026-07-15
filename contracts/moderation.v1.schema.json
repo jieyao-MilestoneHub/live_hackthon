@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://live-hackthon/contracts/moderation.v1.schema.json",
+  "title": "moderation.v1",
+  "description": "內容審核結果 / 稽核紀錄（Analysis Workflow 的 ModerationDecision 輸出，或管理員複核/override）。分級 ALLOWED/FLAGGED/BLOCKED/OVERRIDDEN；影片走 Rekognition 視覺、文字走 Bedrock zh-TW。時間一律毫秒（ms）。對應 CLAUDE.md 合規要求。",
+  "type": "object",
+  "required": ["schema_version", "moderation_id", "project_id", "status", "action", "decided_by", "decided_at"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "moderation.v1" },
+    "moderation_id": { "type": "string" },
+    "project_id": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["PENDING", "ALLOWED", "FLAGGED", "BLOCKED", "OVERRIDDEN"],
+      "description": "審核裁決；與 Project 生命週期正交（見 openapi ModerationStatus）"
+    },
+    "action": {
+      "type": "string",
+      "enum": ["SCAN", "REVIEW", "OVERRIDE"],
+      "description": "此紀錄的動作：SCAN=自動掃描、REVIEW=人工複核、OVERRIDE=管理員推翻"
+    },
+    "decided_by": { "type": "string", "description": "user_id 或 'system'（自動掃描）" },
+    "decided_at": { "type": "string", "format": "date-time" },
+    "note": { "type": "string", "description": "人工複核/override 的說明（合規留痕）" },
+    "policy_version": { "type": "string", "description": "決策政策版本（analysis/moderation policy）" },
+    "visual": {
+      "type": "object",
+      "description": "Rekognition 視覺審核結果",
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string" },
+        "job_status": { "type": "string", "enum": ["IN_PROGRESS", "COMPLETED", "FAILED", "SKIPPED"] },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "confidence"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "description": "moderation label（如 Explicit Nudity / Violence）" },
+              "parent_name": { "type": "string" },
+              "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+              "timestamp_ms": { "type": "integer", "minimum": 0, "description": "在影片中出現的毫秒位置" }
+            }
+          }
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "description": "Bedrock zh-TW 文字審核結果",
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string" },
+        "model_id": { "type": "string" },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["category", "severity"],
+            "additionalProperties": false,
+            "properties": {
+              "source": { "type": "string", "enum": ["transcript", "chat", "highlight_title", "highlight_reason", "subtitle"], "description": "命中的文字來源" },
+              "category": { "type": "string", "description": "如 hate/harassment/sexual/violence/self_harm" },
+              "severity": { "type": "number", "minimum": 0, "maximum": 1 },
+              "quote": { "type": "string", "description": "命中片段（已截斷）" }
+            }
+          }
+        }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

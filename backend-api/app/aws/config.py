@@ -38,6 +38,12 @@ class AttributionConfig:
     nova_review_model_id: str
     nova_reasoning_model_id: str
     nova_premier_model_id: str
+    # Content moderation tuning (see analysis/moderation_policy.py for the pure
+    # decision policy that consumes these thresholds).
+    moderation_min_confidence: float     # Rekognition MinConfidence (0–100)
+    moderation_model_id: str             # Bedrock model for zh-TW text classify
+    moderation_flag_threshold: float     # 0–1 severity ⇒ FLAGGED (needs review)
+    moderation_block_threshold: float    # 0–1 severity ⇒ BLOCKED (hard gate)
 
 
 @lru_cache(maxsize=1)
@@ -55,4 +61,10 @@ def get_attribution_config() -> AttributionConfig:
         nova_review_model_id=os.environ.get("NOVA_REVIEW_MODEL_ID", "amazon.nova-micro-v1:0"),
         nova_reasoning_model_id=os.environ.get("NOVA_REASONING_MODEL_ID", "us.amazon.nova-2-lite-v1:0"),
         nova_premier_model_id=os.environ.get("NOVA_PREMIER_MODEL_ID", "amazon.nova-premier-v1:0"),
+        moderation_min_confidence=float(os.environ.get("MODERATION_MIN_CONFIDENCE", "50")),
+        moderation_model_id=os.environ.get(
+            "MODERATION_MODEL_ID", os.environ.get("NOVA_REVIEW_MODEL_ID", "amazon.nova-micro-v1:0")
+        ),
+        moderation_flag_threshold=float(os.environ.get("MODERATION_FLAG_THRESHOLD", "0.5")),
+        moderation_block_threshold=float(os.environ.get("MODERATION_BLOCK_THRESHOLD", "0.8")),
     )

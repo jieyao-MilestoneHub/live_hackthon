@@ -56,7 +56,7 @@ def test_upload_session_presigns_parts_and_advances_state(client) -> None:
     assert len(body["parts"]) == 3
     assert [p["part_number"] for p in body["parts"]] == [1, 2, 3]
     assert all(p["url"].startswith("http") for p in body["parts"])
-    assert body["expires_in_sec"] == 900
+    assert body["expires_in_sec"] == 21600
 
     # State advanced CREATED -> UPLOAD_PENDING.
     assert client.get(f"/projects/{project_id}").json()["status"] == "UPLOAD_PENDING"
@@ -67,6 +67,38 @@ def test_upload_session_default_single_part(client) -> None:
     resp = client.post(f"/projects/{project_id}/upload-session", json={"filename": "a.mp4"})
     assert resp.status_code == 201
     assert len(resp.json()["parts"]) == 1
+
+
+def test_upload_session_derives_part_count_from_size(client) -> None:
+    """0.5.0 batch path: client sends size_bytes (no part_count) and the server
+    derives >1 parts from the 16 MiB chunk size."""
+    project_id = client.post("/projects", json={"target_duration_ms": 15000}).json()["project_id"]
+    size = 100 * 1024 * 1024  # 100 MiB -> ceil(100/16) = 7 parts
+    resp = client.post(
+        f"/projects/{project_id}/upload-session",
+        json={"filename": "big.mp4", "content_type": "video/mp4", "size_bytes": size},
+    )
+    assert resp.status_code == 201
+    assert len(resp.json()["parts"]) == 7
+
+
+def test_upload_session_rejects_oversize_413(client) -> None:
+    project_id = client.post("/projects", json={"target_duration_ms": 15000}).json()["project_id"]
+    too_big = 10 * 1024**3 + 1  # 1 byte over the 10GB default cap
+    resp = client.post(
+        f"/projects/{project_id}/upload-session",
+        json={"filename": "huge.mp4", "content_type": "video/mp4", "size_bytes": too_big},
+    )
+    assert resp.status_code == 413
+
+
+def test_upload_session_rejects_non_video_415(client) -> None:
+    project_id = client.post("/projects", json={"target_duration_ms": 15000}).json()["project_id"]
+    resp = client.post(
+        f"/projects/{project_id}/upload-session",
+        json={"filename": "notes.txt", "content_type": "text/plain", "size_bytes": 1024},
+    )
+    assert resp.status_code == 415
 
 
 def test_unknown_project_404(client) -> None:
@@ -178,7 +210,7 @@ def test_render_to_download(client, published_artifact) -> None:
     assert d.status_code == 200
     body = d.json()
     assert body["url"]
-    assert body["expires_in_sec"] == 900
+    assert body["expires_in_sec"] == 21600
 
 
 def test_download_unknown_artifact_404(client) -> None:

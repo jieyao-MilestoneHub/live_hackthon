@@ -55,6 +55,11 @@ module "backend_lambda" {
   output_bucket  = module.storage_editor.output_bucket
   bucket_arns    = module.storage_editor.bucket_arns
 
+  # Batch upload: 6h presign + 10GB cap + 1024MB come from module defaults.
+  # reserved_concurrency stays unreserved unless the demo knob is set (see var).
+  reserved_concurrency = var.backend_reserved_concurrency
+  moderation_enabled   = var.moderation_enabled
+
   # Cognito JWT authorizer on the API (blocks anonymous callers from the pipeline).
   cognito_client_id = module.auth.user_pool_client_id
   cognito_issuer    = module.auth.user_pool_endpoint
@@ -82,6 +87,11 @@ module "analysis_workflow" {
   work_bucket    = module.storage_editor.work_bucket
   output_bucket  = module.storage_editor.output_bucket
   bucket_arns    = module.storage_editor.bucket_arns
+
+  # Demo knob: set false to drop ~150 concurrent Bedrock converse calls off the
+  # critical path (deterministic scorer still produces highlights).
+  highlight_llm_enrich = var.highlight_llm_enrich
+  moderation_enabled   = var.moderation_enabled
 }
 
 module "analysis_ingress" {
@@ -113,11 +123,13 @@ module "render_batch" {
   image_uri = var.render_image
   env       = var.env
 
-  # Sized for real FFmpeg on large sources (streamed to disk, but decode/encode
-  # of a long 1080p source needs CPU + headroom). Fargate 20 GB ephemeral default
-  # holds the streamed source.mp4 + temp segments.
-  job_vcpu   = "2"
-  job_memory = "8192"
+  # of a long 1080p source needs CPU + headroom). 50 GiB ephemeral holds a 10GB
+  # streamed source.mp4 + temp segments. max_vcpus scales concurrent renders for
+  # the batch demo (job_vcpu=2 → max_vcpus/2 concurrent).
+  job_vcpu              = "2"
+  job_memory            = "8192"
+  max_vcpus             = var.render_max_vcpus
+  ephemeral_storage_gib = 50
 
   dynamodb_table = module.state_table.table_name
   table_arn      = module.state_table.table_arn
@@ -141,4 +153,19 @@ module "render_workflow" {
 
   batch_job_queue_arn      = module.render_batch.job_queue_arn
   batch_job_definition_arn = module.render_batch.job_definition_arn
+}
+
+# --- Observability: CloudWatch dashboard + alarms to prove the batch demo is
+#     healthy (Lambda throttles/concurrency, SFN, DynamoDB, SQS backlog). ------
+module "observability" {
+  source = "../../modules/observability"
+  name   = "${var.project}-${var.env}"
+  region = var.region
+
+  backend_function_name      = module.backend_lambda.function_name
+  worker_function_names      = module.analysis_workflow.worker_function_names
+  analysis_state_machine_arn = module.analysis_workflow.state_machine_arn
+  table_name                 = module.state_table.table_name
+  # analysis-intake queue name = last ':' segment of its ARN.
+  intake_queue_name = element(split(":", module.analysis_ingress.intake_queue_arn), 5)
 }

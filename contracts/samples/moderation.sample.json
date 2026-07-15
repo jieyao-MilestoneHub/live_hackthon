@@ -1,0 +1,25 @@
+{
+  "schema_version": "moderation.v1",
+  "moderation_id": "mod-7f3a1c9e2b04",
+  "project_id": "project-9a8b7c6d5e4f",
+  "status": "FLAGGED",
+  "action": "SCAN",
+  "decided_by": "system",
+  "decided_at": "2026-07-15T09:12:44Z",
+  "policy_version": "moderation-policy.v1",
+  "visual": {
+    "provider": "rekognition",
+    "job_status": "COMPLETED",
+    "labels": [
+      { "name": "Violence", "parent_name": "Violence", "confidence": 62.5, "timestamp_ms": 84000 }
+    ]
+  },
+  "text": {
+    "provider": "bedrock",
+    "model_id": "amazon.nova-micro-v1:0",
+    "findings": [
+      { "source": "chat", "category": "harassment", "severity": 0.71, "quote": "（示例）帶有攻擊性的彈幕片段" }
+    ]
+  },
+  "created_at": "2026-07-15T09:12:44Z"
+}

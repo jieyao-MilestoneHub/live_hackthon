@@ -100,6 +100,66 @@ class RealTranscriber:
         self._client = boto3.client("transcribe", region_name=settings.aws_region)
         self._s3 = boto3.client("s3", region_name=settings.aws_region)
 
+    def _job_name(self, project_id: str) -> str:
+        return f"lang-live-{project_id}"
+
+    def _output_key(self, project_id: str) -> str:
+        return f"transcript/{project_id}/transcribe.json"
+
+    def start_transcription(
+        self,
+        project_id: str,
+        media_uri: str,
+        *,
+        language_code: str,
+        max_speakers: int,
+    ) -> None:
+        """Start the async job and return immediately (Step Functions polls it).
+
+        Idempotent: a duplicate job name — an SFN retry of the start step, or a
+        poll iteration re-entering start — raises ConflictException, which we
+        treat as "already started" rather than an error. This is what makes the
+        pipeline safe to retry (the old blocking path deadlocked on this)."""
+        job_name = self._job_name(project_id)
+        try:
+            self._client.start_transcription_job(
+                TranscriptionJobName=job_name,
+                Media={"MediaFileUri": media_uri},
+                MediaFormat="mp4",
+                LanguageCode=language_code,
+                OutputBucketName=self._settings.work_bucket,
+                OutputKey=self._output_key(project_id),
+                Settings={
+                    "ShowSpeakerLabels": True,
+                    "MaxSpeakerLabels": max(2, min(30, int(max_speakers))),
+                },
+            )
+        except self._client.exceptions.ConflictException:
+            pass  # job already exists → idempotent start; we'll poll it
+
+    def poll_transcription(self, project_id: str, *, language_code: str) -> dict[str, Any]:
+        """One status check. Returns {status, transcript?, reason?} — never blocks.
+
+        status ∈ {IN_PROGRESS, COMPLETED, FAILED}. On COMPLETED the parsed
+        transcript.v1 is returned; the caller persists it."""
+        import json
+
+        resp = self._client.get_transcription_job(TranscriptionJobName=self._job_name(project_id))
+        status = resp["TranscriptionJob"]["TranscriptionJobStatus"]
+        if status == "COMPLETED":
+            obj = self._s3.get_object(
+                Bucket=self._settings.work_bucket, Key=self._output_key(project_id)
+            )
+            raw = json.loads(obj["Body"].read())
+            return {"status": "COMPLETED", "transcript": parse_transcribe_result(raw, project_id, language_code)}
+        if status == "FAILED":
+            return {
+                "status": "FAILED",
+                "transcript": None,
+                "reason": resp["TranscriptionJob"].get("FailureReason"),
+            }
+        return {"status": "IN_PROGRESS", "transcript": None}
+
     def transcribe(
         self,
         project_id: str,
@@ -108,41 +168,20 @@ class RealTranscriber:
         language_code: str,
         max_speakers: int,
     ) -> dict[str, Any]:
-        import json
-
-        job_name = f"lang-live-{project_id}"
-        output_key = f"transcript/{project_id}/transcribe.json"
-        self._client.start_transcription_job(
-            TranscriptionJobName=job_name,
-            Media={"MediaFileUri": media_uri},
-            MediaFormat="mp4",
-            LanguageCode=language_code,
-            OutputBucketName=self._settings.work_bucket,
-            OutputKey=output_key,
-            Settings={
-                "ShowSpeakerLabels": True,
-                "MaxSpeakerLabels": max(2, min(30, int(max_speakers))),
-            },
+        """Legacy synchronous helper (local runs / run_pipeline.py / tests): start
+        the job then poll in-process. The deployed Lambda pipeline uses the
+        non-blocking start_transcription + poll_transcription split above."""
+        self.start_transcription(
+            project_id, media_uri, language_code=language_code, max_speakers=max_speakers
         )
-
-        # MVP：輪詢（長檔退避）；生產應改 EventBridge → parser。
-        raw: dict[str, Any] | None = None
         for _ in range(self._config.poll_max_attempts):
-            resp = self._client.get_transcription_job(TranscriptionJobName=job_name)
-            status = resp["TranscriptionJob"]["TranscriptionJobStatus"]
-            if status == "COMPLETED":
-                obj = self._s3.get_object(Bucket=self._settings.work_bucket, Key=output_key)
-                raw = json.loads(obj["Body"].read())
-                break
-            if status == "FAILED":
-                raise RuntimeError(
-                    f"Transcribe job failed: {resp['TranscriptionJob'].get('FailureReason')}"
-                )
+            result = self.poll_transcription(project_id, language_code=language_code)
+            if result["status"] == "COMPLETED":
+                return result["transcript"]
+            if result["status"] == "FAILED":
+                raise RuntimeError(f"Transcribe job failed: {result.get('reason')}")
             time.sleep(self._config.poll_interval_sec)
-
-        if raw is None:
-            raise TimeoutError(f"Transcribe job {job_name} did not complete in time")
-        return parse_transcribe_result(raw, project_id, language_code)
+        raise TimeoutError(f"Transcribe job {self._job_name(project_id)} did not complete in time")
 
 
 class StubTranscriber:
@@ -151,6 +190,20 @@ class StubTranscriber:
     def __init__(self, settings: Settings, config: AttributionConfig) -> None:
         self._settings = settings
         self._config = config
+
+    def start_transcription(
+        self, project_id: str, media_uri: str, *, language_code: str, max_speakers: int
+    ) -> None:
+        return None
+
+    def poll_transcription(self, project_id: str, *, language_code: str) -> dict[str, Any]:
+        """Offline: the canned transcript is always immediately ready."""
+        return {
+            "status": "COMPLETED",
+            "transcript": self.transcribe(
+                project_id, "", language_code=language_code, max_speakers=self._config.max_speaker_labels
+            ),
+        }
 
     def transcribe(
         self,

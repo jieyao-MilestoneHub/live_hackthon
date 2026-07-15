@@ -178,6 +178,11 @@ resource "aws_lambda_event_source_mapping" "starter" {
   function_name    = aws_lambda_function.starter.arn
   batch_size       = 10
   enabled          = true
+
+  # Partial-batch responses: only the records the handler reports (returns in
+  # batchItemFailures) are re-driven, not the whole batch of 10. Requires
+  # starter() to return {"batchItemFailures": [...]}.
+  function_response_types = ["ReportBatchItemFailures"]
 }
 
 # ===========================================================================
