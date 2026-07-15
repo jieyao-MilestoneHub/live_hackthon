@@ -164,18 +164,29 @@ def main() -> int:
         )
 
     if args.render:
+        from workers.lambda_handlers import _dual_track_routes
+
         storage = get_storage()
-        render = creative_worker.submit_render(repo, storage, project_id)
-        print(
-            f"[pipeline] plan     -> {render['render_id']}, status -> {render['status']}, "
-            f"effect_seed={render['effect_seed']}, timeline v{render['timeline_version']}"
+        # 雙軌分流：預設只跑 pipeline（與部署一致）；設 DUAL_TRACK=on 才對 pipeline + agent
+        # 兩路各建 render + 規劃 + 編碼，各產一份成品。復用單一政策函式，避免重複開關邏輯。
+        renders = creative_worker.submit_render_routes(
+            repo, storage, project_id, routes=_dual_track_routes()
         )
-        artifact = render_worker.run(repo, storage, project_id, render["render_id"])
-        print(
-            f"[pipeline] render   -> artifact {artifact['artifact_id']}, status -> READY, "
-            f"{artifact['resolution']['width']}x{artifact['resolution']['height']}, "
-            f"video_key={artifact['files']['video_key']}, status -> SUCCEEDED / ARTIFACT_READY"
-        )
+        for render in renders:
+            route = render.get("route", "pipeline")
+            print(
+                f"[pipeline] plan[{route}] -> {render['render_id']}, status -> {render['status']}, "
+                f"effect_seed={render['effect_seed']}, timeline v{render['timeline_version']}"
+            )
+            artifact = render_worker.run(repo, storage, project_id, render["render_id"])
+            print(
+                f"[pipeline] render[{route}] -> artifact {artifact['artifact_id']} (route={artifact.get('route')}), "
+                f"{artifact['resolution']['width']}x{artifact['resolution']['height']}, "
+                f"video_key={artifact['files']['video_key']}"
+            )
+        arts = repo.list_artifacts(project_id)
+        print(f"[pipeline] artifacts -> {len(arts)} downloadable: "
+              + ", ".join(f"{a.get('route')}={a['artifact_id']}" for a in arts))
 
     print(f"[pipeline] DONE. project_id = {project_id}")
     return 0

@@ -24,7 +24,7 @@ from app.settings import get_settings
 from app.state import (
     ProjectState,
     RenderState,
-    assert_project_transition,
+    advance_project_if_allowed,
     assert_render_transition,
 )
 from app.storage import Storage
@@ -166,6 +166,7 @@ def run(
 
     tenant = project.get("tenant_id", "demo")
     artifact_id = render["artifact_id"]
+    route = render.get("route", "pipeline")  # 雙軌分流：pipeline | agent（蓋到 artifact 上）
     render_spec = storage.get_json(settings.work_bucket, render_spec_key)
     subtitle = storage.get_json(
         settings.work_bucket, settings.render_key(tenant, project_id, render_id, "subtitle.json")
@@ -174,8 +175,9 @@ def run(
     ob = settings.output_bucket
 
     # --- RENDERING: one-pass encode (stub or real FFmpeg per get_encoder) ---
-    assert_project_transition(ProjectState(project["status"]), ProjectState.RENDERING)
-    repo.update_project(project_id, {"status": ProjectState.RENDERING.value})
+    # 雙軌分流：兩路共用單一 Project.status；用 guarded advance 讓第二路的重複轉移
+    # 被略過而非丟例外（Render item 自身狀態機仍嚴格）。
+    advance_project_if_allowed(repo, project_id, ProjectState.RENDERING)
     _advance(repo, project_id, render_id, RenderState.RENDERING, "RenderClip", {"started_at": _now_iso()})
 
     subtitle_vtt = _to_vtt(subtitle)
@@ -240,6 +242,7 @@ def run(
         "artifact_id": artifact_id,
         "project_id": project_id,
         "render_id": render_id,
+        "route": route,
         "timeline_version": tv,
         "status": "READY",
         "duration_ms": int(timeline["actual_duration_ms"]),
@@ -267,6 +270,7 @@ def run(
         "artifact_id": artifact_id,
         "project_id": project_id,
         "render_id": render_id,
+        "route": route,
         "timeline_version": tv,
         "status": "READY",
         "video_key": out["video_key"],
@@ -287,8 +291,8 @@ def run(
         repo, project_id, render_id, RenderState.SUCCEEDED, "Done",
         {"artifact_id": artifact_id, "completed_at": _now_iso()},
     )
-    repo.update_project(
-        project_id,
-        {"status": ProjectState.ARTIFACT_READY.value, "latest_artifact_id": artifact_id},
-    )
+    # guarded：一路已把 project 推到 ARTIFACT_READY，第二路 no-op（不丟）。latest_artifact_id
+    # 為 last-wins；GET /projects/{id}/artifacts（list_artifacts）才是雙軌下載的真相。
+    advance_project_if_allowed(repo, project_id, ProjectState.ARTIFACT_READY)
+    repo.update_project(project_id, {"latest_artifact_id": artifact_id})
     return artifact

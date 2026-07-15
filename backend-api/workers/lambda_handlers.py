@@ -41,7 +41,21 @@ from app.state import (
     moderation_allows_publish,
 )
 from app.storage import get_storage
+from creative import DUAL_TRACK_ROUTES
 from workers import analysis_worker, chat_analysis_worker, composer_worker, creative_worker
+
+
+def _dual_track_routes() -> tuple[str, ...]:
+    """雙軌分流 routes：DUAL_TRACK **預設 off**（只跑 pipeline）；顯式設 on 才加 agent 路線。
+
+    預設 off 的理由：``AgentPlanner`` 目前是 fail-open 佔位（委派 pipeline），預設開會讓部署後
+    自動吐出一份「看似 agent、實為 pipeline 換種子」的誤導性成品。待 agent worktree 以
+    ``register_planner("agent", RealAgentPlanner())`` 注入真正的 agent 後，於其 infra 設
+    ``DUAL_TRACK=on`` 即啟用；planner-registry seam 本檔不需再改。
+    """
+    if os.environ.get("DUAL_TRACK", "off").strip().lower() in {"0", "false", "off", "no"}:
+        return ("pipeline",)
+    return DUAL_TRACK_ROUTES
 
 log = logging.getLogger(__name__)
 
@@ -466,8 +480,11 @@ def mark_render_failed(event: dict[str, Any], context: Any = None) -> dict[str, 
         except KeyError:
             pass
     if project_id:
+        # 雙軌分流：若另一路已產出成品（ARTIFACT_READY），別被這一路的失敗拖回 READY_TO_EDIT。
         try:
-            repo.update_project(project_id, {"status": ProjectState.READY_TO_EDIT.value})
+            project = repo.get_project(project_id)
+            if project and project.get("status") != ProjectState.ARTIFACT_READY.value:
+                repo.update_project(project_id, {"status": ProjectState.READY_TO_EDIT.value})
         except KeyError:
             pass
     return {"project_id": project_id, "render_id": render_id, "status": RenderState.FAILED.value}
@@ -634,16 +651,22 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
 
         # 4) render: only auto-render when moderation permits publishing. A FLAGGED
         # chat project composes (editable) but waits for a moderator override before
-        # it can render/download.
+        # it can render/download. When publishing IS allowed, 雙軌分流—each route gets
+        # its own render record + StartExecution (route 掛在 render item 上供 plan_creative
+        # 選規劃器；DUAL_TRACK 預設 off → 單一 pipeline)。
         if moderation_allows_publish(mod_status):
-            render = creative_worker.create_render_record(repo, project_id, timeline["version"])
-            exec_arn = orchestration.start_render(render["render_id"], project_id, timeline["version"])
-            started.append({
-                "project_id": project_id,
-                "render_id": render["render_id"],
-                "execution_arn": exec_arn,
-                "highlight_count": len(result["highlights"]),
-            })
+            for route in _dual_track_routes():
+                render = creative_worker.create_render_record(
+                    repo, project_id, timeline["version"], route=route
+                )
+                exec_arn = orchestration.start_render(render["render_id"], project_id, timeline["version"])
+                started.append({
+                    "project_id": project_id,
+                    "render_id": render["render_id"],
+                    "route": route,
+                    "execution_arn": exec_arn,
+                    "highlight_count": len(result["highlights"]),
+                })
         else:
             log.info("chat_starter: project %s moderation=%s; composed, awaiting review before render",
                      project_id, mod_status)

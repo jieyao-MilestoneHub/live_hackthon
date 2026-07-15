@@ -9,6 +9,14 @@ from creative.effects_registry import (
     ranged_types,
     register,
 )
+from creative.planners import (
+    DUAL_TRACK_ROUTES,
+    AgentPlanner,
+    CreativePlanner,
+    PipelinePlanner,
+    get_creative_planner,
+    register_planner,
+)
 from creative.render_spec import RESOLUTION_BY_ASPECT, build_render_spec
 from creative.style import (
     CAPTION_STYLE,
@@ -28,6 +36,13 @@ __all__ = [
     "RANGED_EFFECT_TYPES",
     "build_render_spec",
     "RESOLUTION_BY_ASPECT",
+    # dual-track creative planners
+    "CreativePlanner",
+    "PipelinePlanner",
+    "AgentPlanner",
+    "get_creative_planner",
+    "register_planner",
+    "DUAL_TRACK_ROUTES",
     # effects registry
     "EFFECT_REGISTRY",
     "EffectStrategy",

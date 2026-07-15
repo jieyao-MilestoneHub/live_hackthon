@@ -118,6 +118,24 @@ def assert_project_transition(current: ProjectState, target: ProjectState) -> No
         raise InvalidTransition(f"illegal Project transition {current.value} -> {target.value}")
 
 
+def advance_project_if_allowed(repo: Any, project_id: str, target: ProjectState) -> bool:
+    """Set Project status to ``target`` only if the transition is legal; else no-op.
+
+    For the dual-track (分流) render phase, two routes drive the same Project's single
+    ``status`` field. The second route's redundant transitions (e.g. already at
+    RENDER_REQUESTED / RENDERING / ARTIFACT_READY) would otherwise raise
+    ``InvalidTransition``. This monotonic guard advances the shared status when the
+    edge exists and quietly skips when it doesn't — never raising. Single-render
+    callers behave identically (their edge is always legal). Returns whether it moved.
+    ``repo`` is duck-typed to avoid a state→repository import cycle.
+    """
+    current = ProjectState(repo.get_project(project_id)["status"])
+    if current is target or not can_transition_project(current, target):
+        return False
+    repo.update_project(project_id, {"status": target.value})
+    return True
+
+
 def can_transition_render(current: RenderState, target: RenderState) -> bool:
     if target is RenderState.FAILED and current not in _RENDER_TERMINAL:
         return True

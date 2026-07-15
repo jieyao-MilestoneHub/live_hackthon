@@ -146,6 +146,10 @@ class ProjectRepository(abc.ABC):
         """Resolve an artifact_id (via pointer) to its Artifact item, or ``None``."""
 
     @abc.abstractmethod
+    def list_artifacts(self, project_id: str) -> list[dict[str, Any]]:
+        """Return all Artifact items for a project (dual-track: one per route)."""
+
+    @abc.abstractmethod
     def put_moderation_event(self, project_id: str, event: dict[str, Any]) -> None:
         """Append an IMMUTABLE moderation audit record (SK ``MODERATION#{ts}#{id}``).
 
@@ -265,6 +269,13 @@ class InMemoryProjectRepository(ProjectRepository):
     def get_artifact_by_id(self, artifact_id: str) -> dict[str, Any] | None:
         project_id = self._artifact_pointers.get(artifact_id)
         return self.get_artifact(project_id, artifact_id) if project_id else None
+
+    def list_artifacts(self, project_id: str) -> list[dict[str, Any]]:
+        return [
+            copy.deepcopy(a)
+            for (pid, _aid), a in self._artifacts.items()
+            if pid == project_id
+        ]
 
     def put_moderation_event(self, project_id: str, event: dict[str, Any]) -> None:
         self._moderation.setdefault(project_id, []).append(copy.deepcopy(event))
@@ -540,6 +551,17 @@ class DynamoProjectRepository(ProjectRepository):
         if not pointer:
             return None
         return self.get_artifact(pointer["project_id"], artifact_id)
+
+    def list_artifacts(self, project_id: str) -> list[dict[str, Any]]:
+        from boto3.dynamodb.conditions import Key
+
+        # Artifact items live under PROJECT#{id} with SK ARTIFACT#{artifact_id};
+        # POINTER items live under a different PK (ARTIFACT#{id}), so they never match.
+        resp = self._table.query(
+            KeyConditionExpression=Key(_PK).eq(_project_pk(project_id))
+            & Key(_SK).begins_with(_ARTIFACT_SK_PREFIX),
+        )
+        return [self._strip_keys(it) for it in resp.get("Items", [])]
 
     def put_moderation_event(self, project_id: str, event: dict[str, Any]) -> None:
         from botocore.exceptions import ClientError
