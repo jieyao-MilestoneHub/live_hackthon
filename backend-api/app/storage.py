@@ -58,6 +58,13 @@ class Storage(abc.ABC):
         """Read raw bytes at ``bucket/key``. Raises ``KeyError`` if absent."""
 
     @abc.abstractmethod
+    def download_to_file(self, bucket: str, key: str, dest_path: str) -> None:
+        """Stream ``bucket/key`` to a local file (no full-object RAM load).
+
+        Used by the FFmpeg render worker to pull a multi-GB source.mp4 without
+        buffering it in memory. Raises ``KeyError`` if the object is absent."""
+
+    @abc.abstractmethod
     def put_json(self, bucket: str, key: str, doc: dict[str, Any]) -> str:
         """Write ``doc`` as JSON to ``bucket/key``. Returns the key."""
 
@@ -115,6 +122,14 @@ class StubStorage(Storage):
             return self._blobs[(bucket, key)]
         except KeyError:
             raise KeyError(f"no object at {bucket}/{key}") from None
+
+    def download_to_file(self, bucket: str, key: str, dest_path: str) -> None:
+        try:
+            data = self._blobs[(bucket, key)]
+        except KeyError:
+            raise KeyError(f"no object at {bucket}/{key}") from None
+        with open(dest_path, "wb") as fh:
+            fh.write(data)
 
     def put_json(self, bucket: str, key: str, doc: dict[str, Any]) -> str:
         self._objects[(bucket, key)] = json.dumps(doc, ensure_ascii=False)
@@ -207,6 +222,19 @@ class S3Storage(Storage):
                 raise KeyError(f"no object at {bucket}/{key}") from exc
             raise
         return resp["Body"].read()
+
+    def download_to_file(self, bucket: str, key: str, dest_path: str) -> None:
+        # boto3 managed transfer: streams + multipart, flat memory (safe for
+        # multi-GB source.mp4). Maps a missing object to KeyError like get_bytes.
+        from botocore.exceptions import ClientError
+
+        try:
+            self._client.download_file(bucket, key, dest_path)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("NoSuchKey", "404", "NoSuchBucket"):
+                raise KeyError(f"no object at {bucket}/{key}") from exc
+            raise
 
     def put_json(self, bucket: str, key: str, doc: dict[str, Any]) -> str:
         self._client.put_object(

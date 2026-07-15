@@ -10,8 +10,11 @@ one-pass filtergraph currently applies cut/concat/aspect/subtitle/audio only;
 zoom/flash effect application is a follow-up (kept out of the graph to keep the
 encode robust). The effect_seed stays reproducible because the PLAN is frozen.
 
-Note: for demo-length clips the source is held in memory then written to a temp
-file so ffmpeg can seek/trim accurately. Large sources should stream to disk.
+The source is provided as a local file path (streamed to disk by the render
+worker, not buffered in RAM — safe for multi-GB inputs). Each clip is extracted
+with FFmpeg INPUT seeking (`-ss <start> -i source -t <dur>`) so a clip late in a
+long source does not decode from 0; the normalized segments are then concatenated
+and finished (subtitles + loudnorm) in one pass.
 """
 from __future__ import annotations
 
@@ -63,9 +66,9 @@ class FFmpegEncoder:
         spec = inputs.render_spec
         res = spec.get("resolution", {})
         width, height = int(res.get("width", 1080)), int(res.get("height", 1920))
-        encode = spec.get("encode", {})
-        crf = int(encode.get("crf", 20))
-        fps = int(encode.get("fps", 30))
+        enc = spec.get("encode", {})
+        crf = int(enc.get("crf", 20))
+        fps = int(enc.get("fps", 30))
         normalize = bool(spec.get("audio", {}).get("normalize", True))
 
         clips = sorted(inputs.timeline.get("clips", []), key=lambda c: c["timeline_order"])
@@ -73,34 +76,67 @@ class FFmpegEncoder:
             raise ValueError("timeline has no clips to render")
 
         ff = _ffmpeg_bin()
+        vf_norm = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}"
+        )
         with tempfile.TemporaryDirectory() as workdir:
-            source_path = os.path.join(workdir, "source.mp4")
-            with open(source_path, "wb") as fh:
-                fh.write(inputs.source or b"")
+            # Source: prefer the streamed path (flat memory); else materialize the
+            # bytes (stub/legacy callers that still pass source=<bytes>).
+            source_path = inputs.source_path
+            if not (source_path and os.path.exists(source_path)):
+                source_path = os.path.join(workdir, "source.mp4")
+                with open(source_path, "wb") as fh:
+                    fh.write(inputs.source or b"")
+
             subs_path = os.path.join(workdir, "subs.vtt")
             with open(subs_path, "w", encoding="utf-8") as fh:
                 fh.write(inputs.subtitle_vtt or "WEBVTT\n\n")
 
-            final_path = os.path.join(workdir, "final.mp4")
-            preview_path = os.path.join(workdir, "preview.mp4")
-            thumb_path = os.path.join(workdir, "thumb.jpg")
+            # Phase 1: extract + normalize each clip with INPUT seeking (`-ss` before
+            # `-i`) so a clip late in a long source seeks to a nearby keyframe instead
+            # of decoding from 0. Uniform output params let the concat stream-copy.
+            seg_paths: list[str] = []
+            for i, clip in enumerate(clips):
+                start = _sec(clip["source_start_ms"])
+                dur = max(0.05, _sec(clip["source_end_ms"]) - start)
+                seg = os.path.join(workdir, f"seg{i:03d}.mp4")
+                _run([
+                    ff, "-y", "-ss", f"{start:.3f}", "-i", source_path, "-t", f"{dur:.3f}",
+                    "-map", "0:v:0", "-map", "0:a:0?",
+                    "-vf", vf_norm,
+                    "-c:v", "libx264", "-crf", str(crf), "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+                    "-video_track_timescale", "90000",
+                    seg,
+                ])
+                seg_paths.append(seg)
 
-            filtergraph = self._build_filtergraph(clips, width, height, fps, subs_path, normalize)
-            audio_map = "[ao]" if normalize else "[ac]"
-            _run([
-                ff, "-y", "-i", source_path,
-                "-filter_complex", filtergraph,
-                "-map", "[vout]", "-map", audio_map,
-                "-c:v", "libx264", "-crf", str(crf), "-preset", "veryfast",
-                "-pix_fmt", "yuv420p",
+            # Phase 2: concat the segments + burn subtitles + loudnorm + faststart → final.
+            concat_list = os.path.join(workdir, "concat.txt")
+            with open(concat_list, "w", encoding="utf-8") as fh:
+                for seg in seg_paths:
+                    fh.write(f"file '{seg.replace(os.sep, '/')}'\n")
+            final_path = os.path.join(workdir, "final.mp4")
+            subs_escaped = subs_path.replace("\\", "/").replace(":", "\\:")
+            final_cmd = [
+                ff, "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
+                "-vf", f"subtitles='{subs_escaped}'",
+            ]
+            if normalize:
+                final_cmd += ["-af", "loudnorm"]
+            final_cmd += [
+                "-c:v", "libx264", "-crf", str(crf), "-preset", "veryfast", "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "128k",
                 "-movflags", "+faststart",
                 final_path,
-            ])
+            ]
+            _run(final_cmd)
 
             # Preview: quick low-res, first ~6s.
             pv_w = max(2, (width // 2) // 2 * 2)
             pv_h = max(2, (height // 2) // 2 * 2)
+            preview_path = os.path.join(workdir, "preview.mp4")
             _run([
                 ff, "-y", "-i", final_path, "-t", "6",
                 "-vf", f"scale={pv_w}:{pv_h}",
@@ -110,6 +146,7 @@ class FFmpegEncoder:
             ])
 
             # Thumbnail: a frame ~1s in (fall back to the very first frame).
+            thumb_path = os.path.join(workdir, "thumb.jpg")
             try:
                 _run([ff, "-y", "-ss", "1", "-i", final_path, "-vframes", "1", thumb_path])
             except RuntimeError:
@@ -120,30 +157,3 @@ class FFmpegEncoder:
                 "preview": _read(preview_path) if os.path.exists(preview_path) else _read(final_path),
                 "thumbnail": _read(thumb_path) if os.path.exists(thumb_path) else b"",
             }
-
-    @staticmethod
-    def _build_filtergraph(
-        clips: list[dict[str, Any]], width: int, height: int, fps: int,
-        subs_path: str, normalize: bool,
-    ) -> str:
-        parts: list[str] = []
-        for i, clip in enumerate(clips):
-            start = _sec(clip["source_start_ms"])
-            end = _sec(clip["source_end_ms"])
-            parts.append(
-                f"[0:v]trim=start={start:.3f}:end={end:.3f},setpts=PTS-STARTPTS,"
-                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[v{i}]"
-            )
-            parts.append(
-                f"[0:a]atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS[a{i}]"
-            )
-        concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(clips)))
-        parts.append(f"{concat_inputs}concat=n={len(clips)}:v=1:a=1[vc][ac]")
-
-        # Burn subtitles. Escape the filter path (': ' and '\\' are special).
-        subs_escaped = subs_path.replace("\\", "/").replace(":", "\\:")
-        parts.append(f"[vc]subtitles='{subs_escaped}'[vout]")
-        if normalize:
-            parts.append("[ac]loudnorm[ao]")
-        return ";".join(parts)

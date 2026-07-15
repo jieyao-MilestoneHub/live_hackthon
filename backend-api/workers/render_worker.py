@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -63,11 +64,12 @@ def _placeholder(kind: str, render_id: str) -> bytes:
 @dataclass
 class EncodeInputs:
     render_id: str
-    source: bytes | None          # raw source.mp4 bytes (None for stub)
+    source: bytes | None          # raw source.mp4 bytes (legacy/stub; None when streamed)
     timeline: dict[str, Any]
     subtitle_vtt: str
     effects: dict[str, Any]
     render_spec: dict[str, Any]
+    source_path: str | None = None  # local path to a streamed source.mp4 (real encoder)
 
 
 class Encoder(Protocol):
@@ -156,24 +158,35 @@ def run(
     _advance(repo, project_id, render_id, RenderState.RENDERING, "RenderClip", {"started_at": _now_iso()})
 
     subtitle_vtt = _to_vtt(subtitle)
-    source_bytes: bytes | None = None
     effects: dict[str, Any] = {}
     if getattr(encoder, "needs_source", False):
         src = render_spec["source"]
-        source_bytes = storage.get_bytes(src["bucket"], src["key"])
         try:
             effects = storage.get_json(settings.work_bucket, render_spec["inputs"]["effect_plan_key"])
         except KeyError:
             effects = {}
-
-    media = encoder.encode(EncodeInputs(
-        render_id=render_id,
-        source=source_bytes,
-        timeline=timeline,
-        subtitle_vtt=subtitle_vtt,
-        effects=effects,
-        render_spec=render_spec,
-    ))
+        # Stream source.mp4 to a temp file (flat memory — the source can be many GB).
+        with tempfile.TemporaryDirectory() as srcdir:
+            source_path = os.path.join(srcdir, "source.mp4")
+            storage.download_to_file(src["bucket"], src["key"], source_path)
+            media = encoder.encode(EncodeInputs(
+                render_id=render_id,
+                source=None,
+                source_path=source_path,
+                timeline=timeline,
+                subtitle_vtt=subtitle_vtt,
+                effects=effects,
+                render_spec=render_spec,
+            ))
+    else:
+        media = encoder.encode(EncodeInputs(
+            render_id=render_id,
+            source=None,
+            timeline=timeline,
+            subtitle_vtt=subtitle_vtt,
+            effects=effects,
+            render_spec=render_spec,
+        ))
     video_bytes = media["final"]
     storage.put_bytes(ob, out["video_key"], video_bytes, "video/mp4")
     storage.put_bytes(ob, out["preview_key"], media["preview"], "video/mp4")

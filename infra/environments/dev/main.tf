@@ -104,6 +104,12 @@ module "render_batch" {
   image_uri = var.render_image
   env       = var.env
 
+  # Sized for real FFmpeg on large sources (streamed to disk, but decode/encode
+  # of a long 1080p source needs CPU + headroom). Fargate 20 GB ephemeral default
+  # holds the streamed source.mp4 + temp segments.
+  job_vcpu   = "2"
+  job_memory = "8192"
+
   dynamodb_table = module.state_table.table_name
   table_arn      = module.state_table.table_arn
   raw_bucket     = module.storage_editor.raw_bucket
