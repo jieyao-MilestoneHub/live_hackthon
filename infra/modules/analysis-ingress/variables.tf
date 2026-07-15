@@ -17,6 +17,21 @@ variable "raw_bucket" {
   description = "Raw bucket name; EventBridge watches its source/ uploads."
 }
 
+variable "work_bucket" {
+  type        = string
+  description = "Work bucket name; chat_starter writes chatlog.v1 + timeline.v1."
+}
+
+variable "output_bucket" {
+  type        = string
+  description = "Output bucket name (passed through to chat_starter env)."
+}
+
+variable "render_state_machine_arn" {
+  type        = string
+  description = "Render workflow SM ARN the chat_starter StartExecutions."
+}
+
 variable "dynamodb_table" {
   type = string
 }

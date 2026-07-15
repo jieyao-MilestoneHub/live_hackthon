@@ -8,6 +8,7 @@ Keep the enums in lockstep with ``ProjectState`` / ``RenderState`` in
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
 
 
 class ProjectState(str, Enum):
@@ -90,3 +91,29 @@ def can_transition_render(current: RenderState, target: RenderState) -> bool:
 def assert_render_transition(current: RenderState, target: RenderState) -> None:
     if not can_transition_render(current, target):
         raise InvalidTransition(f"illegal Render transition {current.value} -> {target.value}")
+
+
+# Ordered pre-analysis states the pipeline walks through before ANALYZING.
+_TO_ANALYZING_ORDER = [
+    ProjectState.CREATED,
+    ProjectState.UPLOAD_PENDING,
+    ProjectState.UPLOADING,
+    ProjectState.ANALYZING,
+]
+
+
+def advance_to_analyzing(repo: Any, project_id: str, current: ProjectState) -> None:
+    """Walk a project from a pre-analysis state up to ANALYZING (mirrors the S3-event
+    trigger). No-op if already ANALYZING. Raises ``InvalidTransition`` if the project
+    is past analysis (COMPOSING/READY_TO_EDIT/…). ``repo`` is duck-typed to avoid a
+    state→repository import cycle; shared by the API (/analyze) and the chat Starter.
+    """
+    if current is ProjectState.ANALYZING:
+        return
+    if current not in _TO_ANALYZING_ORDER[:-1]:
+        raise InvalidTransition(f"cannot analyze from {current.value}")
+    idx = _TO_ANALYZING_ORDER.index(current)
+    for target in _TO_ANALYZING_ORDER[idx + 1:]:
+        now = ProjectState(repo.get_project(project_id)["status"])
+        assert_project_transition(now, target)
+        repo.update_project(project_id, {"status": target.value})

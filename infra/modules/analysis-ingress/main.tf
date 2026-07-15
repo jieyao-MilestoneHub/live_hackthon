@@ -179,3 +179,157 @@ resource "aws_lambda_event_source_mapping" "starter" {
   batch_size       = 10
   enabled          = true
 }
+
+# ===========================================================================
+# Chat-LOG ingress: a bare chat.csv drop auto-runs the full chat pipeline.
+#
+#   S3 raw source/chat.csv ObjectCreated → EventBridge → SQS chat-intake (+DLQ)
+#     → chat_starter Lambda (auto-create → analyze → compose → StartExecution render)
+#
+# Distinct from the transcribe path above (suffix source/source.mp4) so the two
+# never cross-fire on the same object.
+# ===========================================================================
+
+resource "aws_sqs_queue" "chat_intake_dlq" {
+  name                      = "${var.name}-chat-intake-dlq"
+  message_retention_seconds = 1209600
+  tags                      = var.tags
+}
+
+resource "aws_sqs_queue" "chat_intake" {
+  name                       = "${var.name}-chat-intake"
+  visibility_timeout_seconds = 360 # >= chat_starter Lambda timeout (300)
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.chat_intake_dlq.arn
+    maxReceiveCount     = 3
+  })
+  tags = var.tags
+}
+
+data "aws_iam_policy_document" "chat_intake_policy" {
+  statement {
+    sid       = "AllowEventBridge"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.chat_intake.arn]
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_cloudwatch_event_rule.chat_created.arn]
+    }
+  }
+}
+
+resource "aws_sqs_queue_policy" "chat_intake" {
+  queue_url = aws_sqs_queue.chat_intake.id
+  policy    = data.aws_iam_policy_document.chat_intake_policy.json
+}
+
+resource "aws_cloudwatch_event_rule" "chat_created" {
+  name        = "${var.name}-chat-created"
+  description = "Route raw chat.csv uploads to the chat intake queue."
+  event_pattern = jsonencode({
+    source        = ["aws.s3"]
+    "detail-type" = ["Object Created"]
+    detail = {
+      bucket = { name = [var.raw_bucket] }
+      object = { key = [{ suffix = "source/chat.csv" }] }
+    }
+  })
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_event_target" "to_chat_intake" {
+  rule = aws_cloudwatch_event_rule.chat_created.name
+  arn  = aws_sqs_queue.chat_intake.arn
+}
+
+# --- chat_starter Lambda (full pipeline: analyze → compose → StartExecution render)
+resource "aws_iam_role" "chat_starter" {
+  name               = "${var.name}-chat-starter"
+  assume_role_policy = data.aws_iam_policy_document.starter_assume.json
+  tags               = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "chat_starter_logs" {
+  role       = aws_iam_role.chat_starter.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+data "aws_iam_policy_document" "chat_starter" {
+  statement {
+    sid       = "StartRender"
+    actions   = ["states:StartExecution"]
+    resources = [var.render_state_machine_arn]
+  }
+  statement {
+    sid       = "ConsumeChatIntake"
+    actions   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+    resources = [aws_sqs_queue.chat_intake.arn]
+  }
+  statement {
+    sid       = "ReadRaw"
+    actions   = ["s3:GetObject"]
+    resources = ["${local.raw_bucket_arn}/*"]
+  }
+  statement {
+    sid       = "ReadWriteWork"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["arn:aws:s3:::${var.work_bucket}/*"]
+  }
+  statement {
+    sid = "ProjectTable"
+    actions = [
+      "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem",
+      "dynamodb:Query", "dynamodb:BatchWriteItem",
+    ]
+    resources = [var.table_arn, "${var.table_arn}/index/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "chat_starter" {
+  name   = "${var.name}-chat-starter-policy"
+  role   = aws_iam_role.chat_starter.id
+  policy = data.aws_iam_policy_document.chat_starter.json
+}
+
+resource "aws_lambda_function" "chat_starter" {
+  function_name = "${var.name}-chat-starter"
+  role          = aws_iam_role.chat_starter.arn
+  package_type  = "Image"
+  image_uri     = var.image_uri
+  memory_size   = 1024 # inline CSV parse + rule-based analysis
+  timeout       = 300
+  architectures = ["x86_64"]
+
+  image_config {
+    command = ["workers.lambda_handlers.chat_starter"]
+  }
+
+  environment {
+    variables = {
+      USE_INMEMORY             = "0"
+      ENV                      = var.env
+      DYNAMODB_TABLE           = var.dynamodb_table
+      RAW_BUCKET               = var.raw_bucket
+      WORK_BUCKET              = var.work_bucket
+      OUTPUT_BUCKET            = var.output_bucket
+      RENDER_STATE_MACHINE_ARN = var.render_state_machine_arn
+      HIGHLIGHT_LLM_ENRICH     = "0"
+      CHAT_TARGET_DURATION_MS  = "30000"
+    }
+  }
+
+  tags = merge(var.tags, { Purpose = "chat-starter" })
+}
+
+resource "aws_lambda_event_source_mapping" "chat_starter" {
+  event_source_arn = aws_sqs_queue.chat_intake.arn
+  function_name    = aws_lambda_function.chat_starter.arn
+  batch_size       = 1
+  enabled          = true
+}
