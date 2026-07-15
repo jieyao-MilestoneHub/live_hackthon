@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
+  ApiError,
   composeTimeline,
   createChatUpload,
   createRender,
@@ -416,7 +417,14 @@ function EditorRegions({
       window.open(url, '_blank', 'noopener,noreferrer');
     } catch (err) {
       console.error(err);
-      setDownloadErr('取得下載連結失敗，請重試。');
+      const status = err instanceof ApiError ? err.status : 0;
+      setDownloadErr(
+        status === 403
+          ? '內容審核未通過，需管理員複核放行後才能下載。'
+          : status === 401
+            ? '登入已過期，請重新登入後再試。'
+            : '取得下載連結失敗，請重試。',
+      );
     } finally {
       setDownloading(null);
     }
@@ -725,6 +733,9 @@ function ProjectView() {
     null,
   );
   const [render, setRender] = useState<Render | null>(null);
+  // Bumped after a failed poll so the poll effects re-fire (retry) instead of
+  // freezing — a transient 5xx no longer stalls the status display.
+  const [pollNonce, setPollNonce] = useState(0);
 
   useEffect(() => {
     if (!projectId) return;
@@ -749,10 +760,11 @@ function ProjectView() {
         setProject(await getProject(projectId));
       } catch (err) {
         console.error(err);
+        setPollNonce((n) => n + 1); // retry next tick instead of freezing
       }
     }, POLL_INTERVAL_MS);
     return () => clearTimeout(t);
-  }, [projectId, project]);
+  }, [projectId, project, pollNonce]);
 
   // Load the editor data once the project is editable.
   useEffect(() => {
@@ -787,13 +799,14 @@ function ProjectView() {
         }
       } catch (err) {
         console.error(err);
+        if (active) setPollNonce((n) => n + 1); // retry next tick instead of freezing
       }
     }, POLL_INTERVAL_MS);
     return () => {
       active = false;
       clearTimeout(t);
     };
-  }, [render, projectId]);
+  }, [render, projectId, pollNonce]);
 
   function handleRenderStarted(created: RenderCreated) {
     setRender({ render_id: created.render_id, project_id: projectId, status: created.status });

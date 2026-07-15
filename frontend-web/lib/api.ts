@@ -1,7 +1,12 @@
-// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.6.0).
-// Base URL from NEXT_PUBLIC_API_BASE_URL (baked at build time). If a call fails
-// — backend unreachable, or a not-yet-built endpoint returns 501 — we fall back
-// to local mock data so the editor still drives a plausible flow in dev.
+// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.7.0).
+// Base URL from NEXT_PUBLIC_API_BASE_URL (baked at build time).
+//
+// Mock fallback is DEV-ONLY: it kicks in only when the base URL points at
+// localhost (ALLOW_MOCK) AND the failure is a network/offline/501 condition
+// (isOfflineError). Against a real backend (QA/prod build), every real HTTP
+// error — 401/403/404/409/500 — is re-thrown so callers surface it instead of
+// silently showing fabricated data. A 401 also clears auth so the login gate
+// re-prompts (mid-session token expiry). See lib/auth.ts for the token.
 //
 // Swapping in the real backend later needs no page changes: this file + types.ts
 // are the only contract-facing surface. When a Cognito IdToken is present
@@ -30,7 +35,7 @@ import type {
   UploadSessionCreate,
   VideoTimebaseRequest,
 } from '@/types';
-import { getIdToken } from './auth';
+import { getIdToken, logout } from './auth';
 import {
   markMockAnalysisStart,
   mockCreateRender,
@@ -47,6 +52,15 @@ import {
 export const API_BASE_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8080'
 ).replace(/\/$/, '');
+
+/**
+ * Whether the offline mock fallback is allowed. Only when the app targets a
+ * local dev backend (localhost). A QA/prod build points at the real API Gateway,
+ * so ALLOW_MOCK is false and every backend error surfaces to the caller instead
+ * of being masked by fabricated data. Guards every catch below alongside
+ * isOfflineError().
+ */
+export const ALLOW_MOCK = /localhost|127\.0\.0\.1/.test(API_BASE_URL);
 
 /** Prefix for projects synthesized client-side when the backend is offline. */
 const MOCK_PROJECT_PREFIX = 'mock_';
@@ -96,6 +110,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(`API ${init?.method ?? 'GET'} ${path} network error: ${err}`, 0);
   }
   if (!res.ok) {
+    // 401 = missing/expired/invalid token at the API Gateway JWT authorizer.
+    // Clear auth so AuthGate re-prompts login instead of the app limping on with
+    // an expired token (Cognito IdTokens expire ~1h).
+    if (res.status === 401) logout();
     throw new ApiError(`API ${init?.method ?? 'GET'} ${path} failed: ${res.status}`, res.status);
   }
   return (await res.json()) as T;
@@ -109,6 +127,7 @@ export async function createProject(body: ProjectCreate): Promise<ProjectCreated
       body: JSON.stringify(body),
     });
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] createProject fell back to mock (backend unreachable):', err);
     const projectId = `${MOCK_PROJECT_PREFIX}${Date.now()}`;
     return {
@@ -246,6 +265,7 @@ export async function completeUploadSession(
       { method: 'POST', body: JSON.stringify({ upload_id: uploadId, parts }) },
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] completeUploadSession fell back to mock:', err);
     markMockAnalysisStart(projectId);
     return {
@@ -270,6 +290,7 @@ export async function createChatUpload(projectId: string): Promise<ChatUploadUrl
       { method: 'POST' },
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] createChatUpload fell back to mock:', err);
     return {
       bucket: 'mock',
@@ -305,6 +326,7 @@ export async function setVideoTimebase(
       { method: 'PUT', body: JSON.stringify(body) },
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] setVideoTimebase fell back to mock:', err);
     return mockProject(projectId, 'UPLOADING');
   }
@@ -321,6 +343,7 @@ export async function analyzeProject(
       { method: 'POST', body: JSON.stringify(body ?? {}) },
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] analyzeProject fell back to mock:', err);
     markMockAnalysisStart(projectId);
     return { project_id: projectId, status: 'COMPOSING', highlight_count: 0, analysis_version: 'mock' };
@@ -412,6 +435,7 @@ export async function getProject(projectId: string): Promise<Project> {
   try {
     return await request<Project>(`/projects/${encodeURIComponent(projectId)}`);
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] getProject fell back to mock (backend unreachable):', err);
     return mockProject(projectId, mockProjectStatusFor(projectId));
   }
@@ -424,6 +448,7 @@ export async function getModeration(projectId: string): Promise<ModerationView> 
       `/projects/${encodeURIComponent(projectId)}/moderation`,
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] getModeration fell back to empty view:', err);
     return { project_id: projectId, status: 'PENDING', events: [] };
   }
@@ -448,6 +473,7 @@ export async function getHighlights(projectId: string): Promise<HighlightList> {
       `/projects/${encodeURIComponent(projectId)}/highlights`,
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] getHighlights fell back to mock:', err);
     return mockHighlightList(projectId);
   }
@@ -460,6 +486,7 @@ export async function getTimeline(projectId: string): Promise<Timeline> {
       `/projects/${encodeURIComponent(projectId)}/timeline`,
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] getTimeline fell back to mock:', err);
     return mockTimeline(projectId);
   }
@@ -476,6 +503,7 @@ export async function updateTimeline(
       { method: 'PUT', body: JSON.stringify(timeline) },
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] updateTimeline fell back to mock:', err);
     return { timeline_version: (timeline.version ?? 1) + 1 };
   }
@@ -492,6 +520,7 @@ export async function composeTimeline(
       { method: 'POST', body: JSON.stringify(body) },
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] composeTimeline fell back to mock:', err);
     return { timeline_version: 2 };
   }
@@ -512,6 +541,7 @@ export async function createRender(
       { method: 'POST', body: JSON.stringify(body) },
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] createRender fell back to mock:', err);
     return mockCreateRender(projectId);
   }
@@ -524,6 +554,7 @@ export async function listArtifacts(projectId: string): Promise<Artifact[]> {
       `/projects/${encodeURIComponent(projectId)}/artifacts`,
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] listArtifacts fell back to mock:', err);
     return mockListArtifacts(projectId);
   }
@@ -534,6 +565,7 @@ export async function getRender(renderId: string): Promise<Render> {
   try {
     return await request<Render>(`/renders/${encodeURIComponent(renderId)}`);
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] getRender fell back to mock:', err);
     return mockRender(renderId);
   }
@@ -546,6 +578,7 @@ export async function getDownloadUrl(artifactId: string): Promise<DownloadUrl> {
       `/artifacts/${encodeURIComponent(artifactId)}/download`,
     );
   } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] getDownloadUrl fell back to mock:', err);
     return mockDownloadUrl(artifactId);
   }
