@@ -76,6 +76,13 @@ data "aws_iam_policy_document" "job" {
     actions   = ["s3:PutObject"]
     resources = ["${var.bucket_arns["output"]}/*", "${var.bucket_arns["work"]}/*"]
   }
+  # ListBucket so a GetObject on an absent key returns 404/NoSuchKey (KeyError)
+  # rather than a 403 AccessDenied that S3 substitutes without list permission.
+  statement {
+    sid       = "S3List"
+    actions   = ["s3:ListBucket"]
+    resources = [var.bucket_arns["raw"], var.bucket_arns["work"]]
+  }
 }
 
 resource "aws_iam_role_policy" "job" {

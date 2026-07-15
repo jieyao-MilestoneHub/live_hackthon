@@ -54,6 +54,14 @@ data "aws_iam_policy_document" "lambda" {
     actions   = ["s3:GetObject", "s3:PutObject"]
     resources = ["${var.bucket_arns["work"]}/*"]
   }
+  # ListBucket so a GetObject on an absent key (e.g. optional annotations.json)
+  # returns a clean 404/NoSuchKey → KeyError the worker handles, instead of a
+  # 403 AccessDenied that S3 substitutes when the caller can't list the bucket.
+  statement {
+    sid       = "WorkBucketList"
+    actions   = ["s3:ListBucket"]
+    resources = [var.bucket_arns["work"]]
+  }
 }
 
 resource "aws_iam_role_policy" "lambda" {
