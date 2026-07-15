@@ -48,13 +48,84 @@ def _fmt_ts(ms: int) -> str:
 
 
 def _to_vtt(subtitle: dict[str, Any]) -> str:
-    """Render subtitle.v1 cues as WebVTT (the format FFmpeg burns in)."""
+    """Render subtitle.v1 cues as WebVTT (the plain-caption sidecar; also the
+    burn fallback when no ASS is authored)."""
     lines = ["WEBVTT", ""]
     for cue in subtitle.get("cues", []):
         lines.append(f"{_fmt_ts(cue['start_ms'])} --> {_fmt_ts(cue['end_ms'])}")
         lines.append(cue["text"])
         lines.append("")
     return "\n".join(lines)
+
+
+def _fmt_ts_ass(ms: int) -> str:
+    """ASS timestamp H:MM:SS.cc (centiseconds)."""
+    h, rem = divmod(int(ms), 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    s, msec = divmod(rem, 1000)
+    return f"{h:d}:{m:02d}:{s:02d}.{msec // 10:02d}"
+
+
+def _ass_escape(text: str) -> str:
+    """Escape ASS special chars; newlines → hard break ``\\N``."""
+    return (
+        text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}").replace("\n", "\\N")
+    )
+
+
+# Per-word emphasis (爆點字) animation: overshoot to 145% then settle to 115%,
+# golden accent + bold. libass override tags; {\r} resets to the base style.
+_EMPH_OPEN = "{\\1c&H00E1FF&\\b1\\t(0,150,\\fscx145\\fscy145)\\t(150,320,\\fscx115\\fscy115)}"
+_EMPH_CLOSE = "{\\r}"
+
+
+def _ass_dialogue_text(cue: dict[str, Any]) -> str:
+    """Escape cue text, then wrap each emphasis word with the pop-animation tag."""
+    text = _ass_escape(cue.get("text", ""))
+    for word in cue.get("emphasis_words", []) or []:
+        w = _ass_escape(str(word))
+        if not w or "{" in w or "}" in w or w not in text:
+            continue
+        text = text.replace(w, f"{_EMPH_OPEN}{w}{_EMPH_CLOSE}", 1)
+    return text
+
+
+def _to_ass(subtitle: dict[str, Any]) -> str:
+    """Render subtitle.v1 as ASS/SSA so libass can animate emphasis words.
+
+    PlayRes is authored at 1080x1920 (9:16); libass scales it to the actual burn
+    resolution, so positions/sizes stay proportional for other aspects. A CJK
+    font (``SUBTITLE_FONT``, default Noto Sans CJK TC) must exist in the burn
+    container / ``SUBTITLE_FONTS_DIR`` or zh-TW renders as tofu.
+    """
+    font = os.environ.get("SUBTITLE_FONT", "Noto Sans CJK TC")
+    header = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1080",
+        "PlayResY: 1920",
+        "WrapStyle: 2",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, "
+        "Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Default,{font},96,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,"
+        "4,2,2,60,60,140,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    events = [
+        "Dialogue: 0,{start},{end},Default,,0,0,0,,{text}".format(
+            start=_fmt_ts_ass(cue["start_ms"]),
+            end=_fmt_ts_ass(cue["end_ms"]),
+            text=_ass_dialogue_text(cue),
+        )
+        for cue in subtitle.get("cues", [])
+    ]
+    return "\n".join(header + events) + "\n"
 
 
 def _placeholder(kind: str, render_id: str) -> bytes:
@@ -76,7 +147,8 @@ class EncodeInputs:
     subtitle_vtt: str
     effects: dict[str, Any]
     render_spec: dict[str, Any]
-    source_path: str | None = None  # local path to a streamed source.mp4 (real encoder)
+    source_path: str | None = None   # local path to a streamed source.mp4 (real encoder)
+    subtitle_ass: str | None = None  # ASS/SSA for animated emphasis burn (None → VTT)
 
 
 class Encoder(Protocol):
@@ -178,6 +250,7 @@ def run(
     _advance(repo, project_id, render_id, RenderState.RENDERING, "RenderClip", {"started_at": _now_iso()})
 
     subtitle_vtt = _to_vtt(subtitle)
+    subtitle_ass = _to_ass(subtitle)
     effects: dict[str, Any] = {}
     if getattr(encoder, "needs_source", False):
         src = render_spec["source"]
@@ -195,6 +268,7 @@ def run(
                 source_path=source_path,
                 timeline=timeline,
                 subtitle_vtt=subtitle_vtt,
+                subtitle_ass=subtitle_ass,
                 effects=effects,
                 render_spec=render_spec,
             ))
@@ -204,6 +278,7 @@ def run(
             source=None,
             timeline=timeline,
             subtitle_vtt=subtitle_vtt,
+            subtitle_ass=subtitle_ass,
             effects=effects,
             render_spec=render_spec,
         ))

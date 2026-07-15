@@ -103,6 +103,39 @@ resource "aws_iam_role_policy" "backend_render" {
   })
 }
 
+# edit-by-language Route A: let the sidecar enqueue the async encode onto ai-task.
+resource "aws_iam_role_policy" "edit_enqueue" {
+  count = var.enable_edit_by_language ? 1 : 0
+  name  = "${var.name}-edit-enqueue"
+  role  = aws_iam_role.exec.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "EnqueueAiTask"
+      Effect   = "Allow"
+      Action   = "sqs:SendMessage"
+      Resource = var.ai_task_queue_arn
+    }]
+  })
+}
+
+# edit-by-language Route B: let the synchronous planner call Claude on Bedrock.
+# Gated so the InvokeModel grant only exists once you've probed + set the ARNs.
+resource "aws_iam_role_policy" "edit_bedrock" {
+  count = var.enable_edit_by_language && var.edit_planner_llm && length(var.bedrock_model_arns) > 0 ? 1 : 0
+  name  = "${var.name}-edit-bedrock"
+  role  = aws_iam_role.exec.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "InvokeClaude"
+      Effect   = "Allow"
+      Action   = ["bedrock:InvokeModel"]
+      Resource = var.bedrock_model_arns
+    }]
+  })
+}
+
 resource "aws_lambda_function" "backend" {
   function_name = var.name
   role          = aws_iam_role.exec.arn
@@ -126,6 +159,14 @@ resource "aws_lambda_function" "backend" {
       OUTPUT_BUCKET            = var.output_bucket
       PRESIGN_EXPIRY_SEC       = tostring(var.presign_expiry_sec)
       RENDER_STATE_MACHINE_ARN = var.render_state_machine_arn
+
+      # edit-by-language sidecar. AI_TASK_QUEUE_URL empty → sidecar skips enqueue
+      # (returns the plan without triggering encode). EDIT_PLANNER_LLM off → Route A
+      # (deterministic Stub); on → Route B (Claude on Bedrock).
+      AI_TASK_QUEUE_URL             = var.ai_task_queue_url
+      EDIT_PLANNER_LLM              = var.edit_planner_llm ? "1" : "0"
+      EDIT_PLANNER_MODEL_ID         = var.edit_planner_model_id
+      EDIT_PLANNER_QUALITY_MODEL_ID = var.edit_planner_quality_model_id
     }
   }
 

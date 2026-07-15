@@ -39,3 +39,40 @@ variable "render_image" {
   default     = "public.ecr.aws/docker/library/busybox:latest"
   description = "ECR image URI for the FFmpeg render Batch container."
 }
+
+# --- edit-by-language (default OFF; enable after Bedrock probe) -------------
+variable "enable_edit_by_language" {
+  type        = bool
+  default     = false
+  description = "Create the ai-task-render consumer + grant the sidecar sqs:SendMessage/AI_TASK_QUEUE_URL. Enable after pushing Dockerfile.render-lambda."
+}
+
+variable "render_lambda_image" {
+  type        = string
+  default     = "public.ecr.aws/lambda/python:3.11"
+  description = "ffmpeg-in-Lambda render image (Dockerfile.render-lambda). deploy: -var render_lambda_image=<render-ecr>:lambda"
+}
+
+variable "edit_planner_llm" {
+  type        = bool
+  default     = false
+  description = "true = Route B (Claude on Bedrock); false = Route A (deterministic Stub). Requires bedrock_model_arns when true."
+}
+
+variable "edit_planner_model_id" {
+  type        = string
+  default     = ""
+  description = "Bedrock Claude id for model_tier=fast (e.g. (us.)anthropic.claude-haiku-4-5). From the probe."
+}
+
+variable "edit_planner_quality_model_id" {
+  type        = string
+  default     = ""
+  description = "Bedrock Claude id for model_tier=quality (e.g. (us.)anthropic.claude-sonnet-5). From the probe."
+}
+
+variable "bedrock_model_arns" {
+  type        = list(string)
+  default     = []
+  description = "foundation-model / inference-profile ARNs the sidecar may InvokeModel (required when edit_planner_llm=true)."
+}

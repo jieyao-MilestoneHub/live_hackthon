@@ -623,3 +623,12 @@ def get_artifact_download_url(
 from app.attribution_api import router as attribution_router  # noqa: E402
 
 app.include_router(attribution_router)
+
+
+# --- Edit-by-language feature (mounted) ------------------------------------
+# 自然語言剪接：POST /projects/{id}/edit-by-language（NL → effects.v1 + subtitle.v1
+# → 觸發 ffmpeg-in-Lambda encode）、GET /projects/{id}/edit-by-language/plan。
+# router 與模型自成一檔（app/edit_by_language_api.py），此處僅一行掛載。
+from app.edit_by_language_api import router as edit_by_language_router  # noqa: E402
+
+app.include_router(edit_by_language_router)

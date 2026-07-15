@@ -11,8 +11,10 @@ FROM python:3.11-slim
 
 # System ffmpeg (the real encoder). imageio-ffmpeg (from requirements) is only a
 # local-dev fallback; here /usr/bin/ffmpeg is used.
+# fonts-noto-cjk: required for libass to burn zh-TW subtitles + 爆點字 (ASS)
+# without tofu; without a CJK font every Chinese glyph renders as a box.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -25,6 +27,8 @@ COPY contracts/ /app/contracts/
 
 ENV CONTRACTS_DIR=/app/contracts \
     PYTHONUNBUFFERED=1 \
-    RENDER_ENCODER=ffmpeg
+    RENDER_ENCODER=ffmpeg \
+    SUBTITLE_FONTS_DIR=/usr/share/fonts/opentype/noto \
+    SUBTITLE_FONT="Noto Sans CJK TC"
 
 ENTRYPOINT ["python", "-m", "workers.render"]

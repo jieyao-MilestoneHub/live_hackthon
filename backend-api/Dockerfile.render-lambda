@@ -1,0 +1,42 @@
+# ffmpeg-in-Lambda 變體：把真 FFmpeg 編碼 + effects/ASS 打包成 Lambda 容器，供
+# edit-by-language 的 ai-task consumer（handler = workers.lambda_handlers.ai_task_render）。
+#
+# 與 Dockerfile.render(Batch, ENTRYPOINT `python -m workers.render`) 的差別：這裡用
+# AWS Lambda base image（內含 Runtime Interface Client），CMD 由 terraform 的
+# image_config.command 指定 handler。
+#
+# Build from repo ROOT（要 COPY backend-api/ 與 contracts/）：
+#   docker build -f backend-api/Dockerfile.render-lambda -t <render-ecr-url>:lambda .
+#
+# ⚠️ 未在本機驗證過（無 AWS build）：套件名可能因 base image 版本而異；build 失敗時
+#   多半是 (1) 靜態 ffmpeg 版本 tag、(2) 字型套件名。先 `docker build` 通過再 push。
+
+# 靜態 ffmpeg（含 libass/libfreetype/fontconfig）——比在 AL2023 上裝 ffmpeg 可靠。
+FROM mwader/static-ffmpeg:7.1 AS ffmpeg
+
+FROM public.ecr.aws/lambda/python:3.11
+
+# 靜態 ffmpeg → FFMPEG_BINARY 指到它（ffmpeg_encoder._ffmpeg_bin 會優先用此 env）。
+COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
+
+# CJK 字型：libass 燒 zh-TW 字幕/爆點字需要，否則中文變豆腐。
+# AL2023 套件名；若不存在，改用 dnf search 找 noto CJK 套件或 curl 下載字型檔。
+RUN dnf install -y google-noto-sans-cjk-fonts fontconfig \
+    && fc-cache -f \
+    && dnf clean all
+
+# 依賴 + 程式（COPY 進 Lambda task root）。
+COPY backend-api/requirements.txt ${LAMBDA_TASK_ROOT}/requirements.txt
+RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements.txt
+COPY backend-api/ ${LAMBDA_TASK_ROOT}/
+COPY contracts/ ${LAMBDA_TASK_ROOT}/contracts/
+
+ENV CONTRACTS_DIR=${LAMBDA_TASK_ROOT}/contracts \
+    FFMPEG_BINARY=/usr/local/bin/ffmpeg \
+    RENDER_ENCODER=ffmpeg \
+    RENDER_REQUIRE_FFMPEG=1 \
+    SUBTITLE_FONTS_DIR=/usr/share/fonts \
+    SUBTITLE_FONT="Noto Sans CJK TC"
+
+# handler 由 terraform image_config.command 指定；此為 build-time 預設。
+CMD ["workers.lambda_handlers.ai_task_render"]
