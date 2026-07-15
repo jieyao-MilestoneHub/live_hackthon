@@ -130,6 +130,9 @@ resource "aws_batch_job_definition" "render" {
     environment = [
       { name = "USE_INMEMORY", value = "0" },
       { name = "RENDER_ENCODER", value = "ffmpeg" },
+      # Fail-closed: if RENDER_ENCODER ever drifts off "ffmpeg", the render raises
+      # instead of silently publishing a stub placeholder as a real artifact.
+      { name = "RENDER_REQUIRE_FFMPEG", value = "1" },
       { name = "ENV", value = var.env },
       { name = "DYNAMODB_TABLE", value = var.dynamodb_table },
       { name = "RAW_BUCKET", value = var.raw_bucket },
