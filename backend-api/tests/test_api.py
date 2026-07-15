@@ -5,6 +5,16 @@ DynamoDB ``VideoEditor`` + S3 multipart code paths.
 """
 from __future__ import annotations
 
+import re
+
+from app.main import _new_project_id, _slugify_title
+
+# project-<YYYYMMDD>-<HHMMSS>[-<ascii-slug>]-<8 hex>. The slug segment is
+# optional (Chinese-only titles drop it), and the whole id stays [a-z0-9-] so it
+# is safe as a Transcribe job name / Rekognition collection id and needs no
+# URL-encoding in the EventBridge S3-event key.
+_PROJECT_ID_RE = re.compile(r"^project-\d{8}-\d{6}(?:-[a-z0-9-]+?)?-[0-9a-f]{8}$")
+
 
 def test_health(client) -> None:
     resp = client.get("/health")
@@ -32,6 +42,44 @@ def test_create_project_roundtrip(client) -> None:
     assert gb["project_id"] == project_id
     assert gb["status"] == "CREATED"
     assert gb["target_duration_ms"] == 30000
+
+
+def test_slugify_title_keeps_ascii_drops_cjk() -> None:
+    # Mixed CJK/ASCII title: keep the ASCII runs, drop CJK + punctuation.
+    assert _slugify_title("我的直播精華 — stream1.mp4") == "stream1-mp4"
+    # Pure-Chinese title slugs to empty -> caller falls back to timestamp-only.
+    assert _slugify_title("純中文標題") == ""
+    assert _slugify_title(None) == ""
+    assert _slugify_title("") == ""
+    # Separators collapse; dangling separators are trimmed; truncation applies.
+    assert _slugify_title("A_B  C!!!") == "a-b-c"
+    assert _slugify_title("x" * 50, max_len=8) == "x" * 8
+
+
+def test_new_project_id_is_traceable_and_url_safe() -> None:
+    with_slug = _new_project_id("我的直播精華 — stream1.mp4")
+    assert _PROJECT_ID_RE.match(with_slug), with_slug
+    assert "-stream1-mp4-" in with_slug  # video filename is visible when listing S3
+
+    # Chinese-only title -> timestamp-only id, still matches and stays url-safe.
+    zh_only = _new_project_id("純中文標題")
+    assert _PROJECT_ID_RE.match(zh_only), zh_only
+    assert re.fullmatch(r"[a-z0-9-]+", zh_only), zh_only
+
+    # No title at all (offline pipeline path) still yields a valid id.
+    assert _PROJECT_ID_RE.match(_new_project_id())
+
+
+def test_create_project_returns_traceable_id(client) -> None:
+    resp = client.post(
+        "/projects", json={"title": "我的直播精華 — stream1.mp4", "target_duration_ms": 30000}
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    project_id = body["project_id"]
+    assert _PROJECT_ID_RE.match(project_id), project_id
+    # The traceable id nests into the S3 source key.
+    assert f"project={project_id}/" in body["source_key"]
 
 
 def test_target_duration_validation(client) -> None:

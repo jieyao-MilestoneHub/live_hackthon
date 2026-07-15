@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import uuid
 from pathlib import Path
 
 # Make backend-api/ importable when run as a script.
@@ -27,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from analysis.chatlog import clean_chatlog  # noqa: E402
 from analysis.validate import load_sample  # noqa: E402
+from app.main import _new_project_id  # noqa: E402
 from app.repository import get_repository  # noqa: E402
 from app.settings import get_settings  # noqa: E402
 from app.state import ProjectState, assert_project_transition  # noqa: E402
@@ -87,7 +87,7 @@ def main() -> int:
 
     project_id = args.project_id
     if project_id is None:
-        project_id = f"project-{uuid.uuid4().hex[:12]}"
+        project_id = _new_project_id()
         repo.create_project({
             "project_id": project_id,
             "tenant_id": "demo",
