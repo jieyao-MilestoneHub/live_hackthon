@@ -68,6 +68,15 @@ module "backend_lambda" {
   # of running Creative Planning inline, and grants states:StartExecution.
   render_state_machine_arn = module.render_workflow.state_machine_arn
   enable_render_start      = true
+
+  # edit-by-language sidecar: enqueue encode onto ai-task + (optional) Claude planner.
+  enable_edit_by_language       = var.enable_edit_by_language
+  ai_task_queue_arn             = module.analysis_ingress.ai_task_queue_arn
+  ai_task_queue_url             = module.analysis_ingress.ai_task_queue_url
+  edit_planner_llm              = var.edit_planner_llm
+  edit_planner_model_id         = var.edit_planner_model_id
+  edit_planner_quality_model_id = var.edit_planner_quality_model_id
+  bedrock_model_arns            = var.bedrock_model_arns
 }
 
 # --- Analysis plane (M2.1): S3 event → SQS → Starter → Step Functions ------
@@ -153,6 +162,27 @@ module "render_workflow" {
 
   batch_job_queue_arn      = module.render_batch.job_queue_arn
   batch_job_definition_arn = module.render_batch.job_definition_arn
+}
+
+# --- edit-by-language encode: ffmpeg-in-Lambda consumer of the ai-task queue ---
+# Gated off by default (enable_edit_by_language=false): needs the Bedrock probe +
+# a pushed Dockerfile.render-lambda image first. Flip on (with render_lambda_image
+# set) to create the consumer; it reuses the existing ai-task queue, not Batch.
+module "ai_task_render" {
+  count  = var.enable_edit_by_language ? 1 : 0
+  source = "../../modules/ai-task-render"
+  name   = "${var.project}-render-${var.env}"
+
+  image_uri = var.render_lambda_image
+  env       = var.env
+
+  ai_task_queue_arn = module.analysis_ingress.ai_task_queue_arn
+  dynamodb_table    = module.state_table.table_name
+  table_arn         = module.state_table.table_arn
+  raw_bucket        = module.storage_editor.raw_bucket
+  work_bucket       = module.storage_editor.work_bucket
+  output_bucket     = module.storage_editor.output_bucket
+  bucket_arns       = module.storage_editor.bucket_arns
 }
 
 # --- Observability: CloudWatch dashboard + alarms to prove the batch demo is

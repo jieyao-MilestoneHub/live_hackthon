@@ -52,7 +52,11 @@ resource "aws_sqs_queue_policy" "intake" {
   policy    = data.aws_iam_policy_document.intake_policy.json
 }
 
-# --- SQS: ai-task (+DLQ) — §十九 (no consumer yet) -------------------------
+# --- SQS: ai-task (+DLQ) — §十九 -------------------------------------------
+# Consumer = the ai-task-render Lambda (edit-by-language ffmpeg encode, module
+# ai-task-render). visibility_timeout MUST be >= that Lambda's timeout (900) or
+# SQS redelivers mid-encode → duplicate work (the consumer is idempotent, but a
+# redelivery still wastes an invocation).
 resource "aws_sqs_queue" "ai_task_dlq" {
   name                      = "${var.name}-ai-task-dlq"
   message_retention_seconds = 1209600
@@ -61,7 +65,7 @@ resource "aws_sqs_queue" "ai_task_dlq" {
 
 resource "aws_sqs_queue" "ai_task" {
   name                       = "${var.name}-ai-task"
-  visibility_timeout_seconds = 300
+  visibility_timeout_seconds = 960 # >= ai-task-render Lambda timeout (900)
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.ai_task_dlq.arn
     maxReceiveCount     = 5

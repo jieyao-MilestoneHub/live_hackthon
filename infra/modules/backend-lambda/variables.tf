@@ -122,3 +122,51 @@ variable "enable_render_start" {
   default     = false
   description = "Create the states:StartExecution IAM policy for the render workflow. A static flag (not derived from render_state_machine_arn, whose value is unknown at plan time — count/for_each must be known at plan)."
 }
+
+# --- edit-by-language (sidecar) wiring -------------------------------------
+# Two independent gates map to the feature's two routes:
+#   enable_edit_by_language → async encode lane (SQS SendMessage + AI_TASK_QUEUE_URL)
+#                             — Route A (deterministic Stub planner) works with just this.
+#   edit_planner_llm        → flip to Route B (Claude on Bedrock): grants
+#                             bedrock:InvokeModel + sets EDIT_PLANNER_LLM=1.
+variable "enable_edit_by_language" {
+  type        = bool
+  default     = false
+  description = "Wire the edit-by-language async encode lane: grant sqs:SendMessage to ai-task + set AI_TASK_QUEUE_URL."
+}
+
+variable "ai_task_queue_arn" {
+  type        = string
+  default     = ""
+  description = "ai-task SQS queue ARN the sidecar enqueues encode jobs onto."
+}
+
+variable "ai_task_queue_url" {
+  type        = string
+  default     = ""
+  description = "ai-task SQS queue URL (AI_TASK_QUEUE_URL env)."
+}
+
+variable "edit_planner_llm" {
+  type        = bool
+  default     = false
+  description = "true = Route B (Claude on Bedrock). Requires bedrock_model_arns. false = Route A (Stub baseline)."
+}
+
+variable "edit_planner_model_id" {
+  type        = string
+  default     = ""
+  description = "Bedrock Claude model id for model_tier=fast (e.g. anthropic.claude-haiku-4-5 or us.anthropic.claude-haiku-4-5). Confirm via probe."
+}
+
+variable "edit_planner_quality_model_id" {
+  type        = string
+  default     = ""
+  description = "Bedrock Claude model id for model_tier=quality (e.g. (us.)anthropic.claude-sonnet-5)."
+}
+
+variable "bedrock_model_arns" {
+  type        = list(string)
+  default     = []
+  description = "foundation-model / inference-profile ARNs the sidecar may InvokeModel. Required (non-empty) when edit_planner_llm=true. Set from the probe (add the regional foundation-model ARNs a us.* inference profile fans out to)."
+}

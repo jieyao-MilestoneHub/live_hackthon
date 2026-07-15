@@ -42,7 +42,13 @@ from app.state import (
 )
 from app.storage import get_storage
 from creative import DUAL_TRACK_ROUTES
-from workers import analysis_worker, chat_analysis_worker, composer_worker, creative_worker
+from workers import (
+    analysis_worker,
+    chat_analysis_worker,
+    composer_worker,
+    creative_worker,
+    render_worker,
+)
 
 
 def _dual_track_routes() -> tuple[str, ...]:
@@ -676,3 +682,49 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
                 "highlight_count": len(result["highlights"]),
             })
     return {"started": started}
+
+
+def ai_task_render(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    """SQS handler for the ai-task lane (edit-by-language encode).
+
+    Each record body is ``{"task":"render","render_id":...,"project_id":...}``
+    put on the queue by ``orchestration.enqueue_ai_task`` from the sidecar. Runs
+    the real FFmpeg encode (this Lambda sets ``RENDER_ENCODER=ffmpeg``) via the
+    SAME ``render_worker.run`` the Batch path uses — the plan (effects.v1 /
+    subtitle.v1) was already written to the work bucket by the sidecar.
+
+    Idempotent (SQS is at-least-once): a redelivered message for an already-
+    SUCCEEDED render is a no-op instead of tripping ``render_worker._advance``'s
+    state-transition assert."""
+    repo = get_repository()
+    storage = get_storage()
+    done: list[dict[str, Any]] = []
+    for record in event.get("Records", []):
+        body = record.get("body")
+        payload = json.loads(body) if isinstance(body, str) else (body or {})
+        if payload.get("task") not in (None, "render"):
+            log.info("ai_task_render: skipping task=%s", payload.get("task"))
+            continue
+        project_id = payload.get("project_id")
+        render_id = payload.get("render_id")
+        if not project_id or not render_id:
+            log.warning("ai_task_render: record missing project_id/render_id: %s", payload)
+            continue
+
+        render = repo.get_render(project_id, render_id)
+        if render is None:
+            log.warning("ai_task_render: render %s not found for %s", render_id, project_id)
+            continue
+        if render.get("status") == RenderState.SUCCEEDED.value:
+            log.info("ai_task_render: render %s already SUCCEEDED; skip (idempotent)", render_id)
+            done.append({"render_id": render_id, "status": "SUCCEEDED", "skipped": True})
+            continue
+
+        artifact = render_worker.run(repo, storage, project_id, render_id)
+        done.append({
+            "render_id": render_id,
+            "project_id": project_id,
+            "artifact_id": artifact["artifact_id"],
+            "status": "SUCCEEDED",
+        })
+    return {"rendered": done}
