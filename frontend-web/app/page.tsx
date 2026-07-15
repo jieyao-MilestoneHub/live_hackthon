@@ -1,8 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { createProject } from '@/lib/api';
 import HighlightWave from '@/components/HighlightWave';
 import BatchUploader from '@/components/BatchUploader';
 
@@ -12,45 +10,19 @@ const DEFAULT_TARGET_SEC = 30;
 const RULER = ['0:00', '1:30', '3:00', '4:00', '5:30'];
 
 const STEPS = [
-  { t: '上傳原始影片', d: '瀏覽器以 presigned URL 直傳直播錄影至 S3，不經過伺服器。' },
-  { t: 'AI 分析高光並自動組片', d: '偵測情緒高峰，Composer 依目標秒數組出初始時間軸。' },
+  {
+    t: '上傳影片＋聊天室 LOG',
+    d: '瀏覽器以 presigned URL 直傳直播錄影至 S3；每支影片搭配一份聊天室 LOG CSV，系統自動依檔名配對。',
+  },
+  { t: 'AI 分析高光並自動組片', d: '從彈幕熱度峰值偵測高光，Composer 依目標秒數組出初始時間軸。' },
   { t: '微調時間軸，一鍵渲染', d: '排序、鎖定、選字幕與特效比例，送出即輸出成品短片。' },
 ];
 
 export default function LandingPage() {
-  const router = useRouter();
   const [title, setTitle] = useState('');
   const [targetSec, setTargetSec] = useState(DEFAULT_TARGET_SEC);
-  const [analysisSource, setAnalysisSource] = useState<'transcribe' | 'chat'>('transcribe');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const on = (n: number) => `reveal stagger-${n}`;
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    // Transcribe uses the inline BatchUploader; only the chat flow creates a
-    // single project here and routes to the paired video+CSV upload screen.
-    if (analysisSource !== 'chat') return;
-    if (targetSec < 1 || targetSec > MAX_TARGET_SEC) {
-      setError(`目標秒數需介於 1–${MAX_TARGET_SEC} 秒。`);
-      return;
-    }
-    setError(null);
-    setSubmitting(true);
-    try {
-      const created = await createProject({
-        title: title.trim() || undefined,
-        target_duration_ms: Math.round(targetSec * 1000),
-        analysis_source: analysisSource,
-      });
-      router.push(`/projects?id=${encodeURIComponent(created.project_id)}`);
-    } catch (err) {
-      console.error(err);
-      setError('建立專案失敗，請稍後再試。');
-      setSubmitting(false);
-    }
-  }
 
   return (
     <main className="shell page">
@@ -62,7 +34,7 @@ export default function LandingPage() {
           剪成短片。
         </h1>
         <p className={`lead ${on(3)}`} style={{ maxWidth: 560 }}>
-          上傳直播錄影，AI 找出情緒高峰、自動組出 60 秒內的精華，時間軸交給你微調。
+          批次上傳直播錄影與聊天室 LOG，AI 從彈幕熱度找出情緒高峰、自動組出 60 秒內的精華，時間軸交給你微調。
         </p>
 
         <div className={`${on(4)}`} style={{ marginTop: 32 }}>
@@ -85,9 +57,9 @@ export default function LandingPage() {
             <span className="panel__title">開始一個新專案</span>
             <span className="panel__eyebrow">NEW PROJECT</span>
           </div>
-          <form onSubmit={handleSubmit}>
+          <div>
             <div className="field">
-              <label htmlFor="title">專案標題（選填）</label>
+              <label htmlFor="title">專案標題前綴（選填）</label>
               <input
                 id="title"
                 className="input"
@@ -97,35 +69,7 @@ export default function LandingPage() {
                 maxLength={80}
                 onChange={(e) => setTitle(e.target.value)}
               />
-            </div>
-
-            <div className="field">
-              <label>分析來源</label>
-              <div className="row" style={{ display: 'flex', gap: 8 }}>
-                <button
-                  type="button"
-                  className={`btn btn--sm ${analysisSource === 'transcribe' ? '' : 'btn--ghost'}`}
-                  onClick={() => setAnalysisSource('transcribe')}
-                  style={{ flex: 1 }}
-                  aria-pressed={analysisSource === 'transcribe'}
-                >
-                  影片語音 · Transcribe
-                </button>
-                <button
-                  type="button"
-                  className={`btn btn--sm ${analysisSource === 'chat' ? '' : 'btn--ghost'}`}
-                  onClick={() => setAnalysisSource('chat')}
-                  style={{ flex: 1 }}
-                  aria-pressed={analysisSource === 'chat'}
-                >
-                  聊天室 LOG · 彈幕熱度
-                </button>
-              </div>
-              <p className="hint">
-                {analysisSource === 'chat'
-                  ? '需同時上傳影片與聊天室 LOG CSV；高光取自彈幕熱度峰值。'
-                  : '上傳影片後自動轉逐字稿，偵測語音情緒高峰。可一次批次上傳多支影片。'}
-              </p>
+              <p className="hint">批次上傳時，各專案會以「前綴 — 檔名」命名。</p>
             </div>
 
             <div className="field">
@@ -155,22 +99,15 @@ export default function LandingPage() {
               </p>
             </div>
 
-            {analysisSource === 'chat' ? (
-              <>
-                <button type="submit" className="btn btn--lg btn--block" disabled={submitting}>
-                  {submitting ? '建立中…' : '建立並前往上傳 ▸'}
-                </button>
-                {error && <p className="error">{error}</p>}
-              </>
-            ) : (
-              <BatchUploader
-                targetDurationMs={Math.round(
-                  Math.min(MAX_TARGET_SEC, Math.max(1, targetSec)) * 1000,
-                )}
-                titlePrefix={title.trim() || undefined}
-              />
-            )}
-          </form>
+            <p className="hint" style={{ marginBottom: 10 }}>
+              每支影片需搭配一份聊天室 LOG（.csv），系統自動依檔名配對。
+            </p>
+
+            <BatchUploader
+              targetDurationMs={Math.round(Math.min(MAX_TARGET_SEC, Math.max(1, targetSec)) * 1000)}
+              titlePrefix={title.trim() || undefined}
+            />
+          </div>
         </div>
 
         {/* How it works — a real 3-step sequence */}
