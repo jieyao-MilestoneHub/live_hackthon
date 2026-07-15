@@ -116,3 +116,131 @@ def hot_windows(
         "threshold": threshold,
         "windows": result_windows,
     }
+
+
+# 每 5 秒重算一次、視窗仍是 60 秒（見 sliding_hot_windows）。
+SLIDING_STEP_MS = 5_000
+SLIDING_WINDOW_MS = MINUTE_MS
+
+
+def sliding_hot_windows(
+    chatlog: dict[str, Any],
+    sigma: float = 1.0,
+    window_ms: int = SLIDING_WINDOW_MS,
+    step_ms: int = SLIDING_STEP_MS,
+    merge_gap_ms: int = MINUTE_MS,
+) -> dict[str, Any]:
+    """滑動視窗版熱區偵測，修正固定日曆分鐘桶的邊界切斷問題。
+
+    背景：hot_windows() 用固定日曆分鐘桶（00-59 秒一組），如果一波連續反應
+    剛好卡在分鐘交界（例如前一分鐘 4 則、後一分鐘 5 則，實際 90 秒內共 9 則
+    連續留言），兩邊都可能各自低於 mean+sigma 門檻而被漏掉整波。
+
+    做法：每 step_ms（預設 5 秒）重新計算一次「回看 window_ms（預設 60 秒）內
+    的真人留言數」，取代固定分鐘桶，門檻與合併規則沿用方法一的精神：
+    - threshold = mean + sigma * pstdev（對滾動計數序列本身取統計量）。
+    - 熱窗 = 滾動計數 >= threshold（且 >= 1）。
+    - 相鄰熱窗間隔 <= merge_gap_ms 者合併，最終窗的起訖時間取該範圍內
+      實際訊息的最早/最晚時間戳，不是分鐘桶邊界。
+
+    回傳形狀與 hot_windows() 相容（mean / sigma_value / threshold / windows，
+    每個 window 含 start_epoch_ms / end_epoch_ms / human_count /
+    peak_minute_volume），可直接餵給 candidates.build_candidates()，
+    是 hot_windows() 的替代方案，不影響既有呼叫端與測試。
+    """
+    messages = chatlog.get("messages") or []
+    human = [m for m in messages if spam.is_human_message(m)]
+    started = _stream_start_epoch_ms(chatlog, human)
+
+    all_times = [int(m["time_ms"]) for m in messages] or [started]
+    last_offset_ms = max(0, max(all_times) - started)
+
+    # 全場時長比一個視窗還短時，滾動門檻統計沒有意義（連一個「完整回看」的
+    # 點位都湊不齊）。這種退化情境直接比照方法一的精神：只要有真人留言，
+    # 整段就是一個候選窗，不跑滾動邏輯。
+    if last_offset_ms < window_ms:
+        if not human:
+            return {"mean": 0.0, "sigma_value": 0.0, "threshold": 0.0, "windows": []}
+        real_start = min(int(m["time_ms"]) for m in human)
+        real_end = max(int(m["time_ms"]) for m in human)
+        return {
+            "mean": float(len(human)),
+            "sigma_value": 0.0,
+            "threshold": float(len(human)),
+            "windows": [
+                {
+                    "start_epoch_ms": real_start,
+                    "end_epoch_ms": real_end,
+                    "human_count": len(human),
+                    "peak_minute_volume": len(human),
+                }
+            ],
+        }
+
+    n_bins = last_offset_ms // step_ms + 1
+
+    bin_counts = [0] * (n_bins + 1)
+    for m in human:
+        idx = max(0, (int(m["time_ms"]) - started) // step_ms)
+        if idx < len(bin_counts):
+            bin_counts[idx] += 1
+
+    window_bins = max(1, window_ms // step_ms)
+    rolling: list[int] = []
+    running = 0
+    for i in range(len(bin_counts)):
+        running += bin_counts[i]
+        if i >= window_bins:
+            running -= bin_counts[i - window_bins]
+        rolling.append(running)
+
+    # 統計量只用「視窗已完整回看 window_ms」的點位計算，排除串流開頭那段
+    # 視窗還沒補滿的爬升期（ramp-up）——不然這些偏低的過渡值會混進 mean/std，
+    # 導致門檻被拉到接近尖峰值，短串流或早期爆點反而測不到。
+    valid_rolling = rolling[window_bins - 1:] if len(rolling) >= window_bins else rolling
+    mean = statistics.fmean(valid_rolling) if valid_rolling else 0.0
+    sd = statistics.pstdev(valid_rolling) if len(valid_rolling) > 1 else 0.0
+    threshold = mean + sigma * sd
+
+    hot_idx = [i for i, r in enumerate(rolling) if r >= threshold and r >= 1]
+
+    merge_gap_bins = max(1, merge_gap_ms // step_ms)
+    raw_ranges: list[tuple[int, int]] = []
+    if hot_idx:
+        start_i = prev_i = hot_idx[0]
+        for i in hot_idx[1:]:
+            if i - prev_i <= merge_gap_bins:
+                prev_i = i
+            else:
+                raw_ranges.append((start_i, prev_i))
+                start_i = prev_i = i
+        raw_ranges.append((start_i, prev_i))
+
+    result_windows: list[dict[str, Any]] = []
+    for i_start, i_end in raw_ranges:
+        range_start_ms = started + max(0, i_start - window_bins + 1) * step_ms
+        range_end_ms = started + (i_end + 1) * step_ms
+        msgs = [m for m in human if range_start_ms <= int(m["time_ms"]) < range_end_ms]
+        if not msgs:
+            continue
+        real_start = min(int(m["time_ms"]) for m in msgs)
+        real_end = max(int(m["time_ms"]) for m in msgs)
+        per_minute: dict[int, int] = {}
+        for m in msgs:
+            mi = (int(m["time_ms"]) - started) // MINUTE_MS
+            per_minute[mi] = per_minute.get(mi, 0) + 1
+        result_windows.append(
+            {
+                "start_epoch_ms": real_start,
+                "end_epoch_ms": real_end,
+                "human_count": len(msgs),
+                "peak_minute_volume": max(per_minute.values()),
+            }
+        )
+
+    return {
+        "mean": mean,
+        "sigma_value": sd,
+        "threshold": threshold,
+        "windows": result_windows,
+    }
