@@ -27,6 +27,7 @@ from app.state import (
     assert_render_transition,
 )
 from app.storage import Storage
+from analysis.annotations import build_annotations
 from creative import build_render_spec, plan_effects, plan_subtitles
 
 
@@ -135,15 +136,28 @@ def run(
     artifact_id = render["artifact_id"]
     work_bucket = settings.work_bucket
 
-    # 1. Subtitle plan.
+    # 起承轉合標註：優先用已落地/使用者編修過的 annotations.v1，否則就地由 highlights 產生。
+    try:
+        annotations = storage.get_json(work_bucket, settings.annotations_key(tenant, project_id))
+    except KeyError:
+        annotations = build_annotations(highlights, project_id=project_id)
+
+    # 使用者在 timeline 上的字幕/特效設定（開放物件；字型/顏色/位置/強度覆寫）。
+    subtitle_settings = timeline.get("subtitle_settings")
+    effect_settings = timeline.get("effect_settings")
+
+    # 1. Subtitle plan（兩層：逐字稿 caption + 爆點 keyword 動畫，套樣式）。
     _advance(repo, project_id, render_id, RenderState.PLANNING_SUBTITLES, "GenerateSubtitlePlan")
-    subtitle = plan_subtitles(timeline, highlights, project_id, render_id)
+    subtitle = plan_subtitles(
+        timeline, highlights, project_id, render_id,
+        annotations=annotations, settings=subtitle_settings,
+    )
     subtitle_key = settings.render_key(tenant, project_id, render_id, "subtitle.json")
     storage.put_json(work_bucket, subtitle_key, subtitle)
 
-    # 2. Effect plan (deterministic via effect_seed).
+    # 2. Effect plan (deterministic via effect_seed；依 intensity 調強度)。
     _advance(repo, project_id, render_id, RenderState.PLANNING_EFFECTS, "GenerateEffectPlan")
-    effects = plan_effects(timeline, effect_seed, project_id, render_id)
+    effects = plan_effects(timeline, effect_seed, project_id, render_id, settings=effect_settings)
     effect_plan_key = settings.render_key(tenant, project_id, render_id, "effect-plan.json")
     storage.put_json(work_bucket, effect_plan_key, effects)
 

@@ -262,6 +262,30 @@ paths:
         "404": { description: project 不存在 }
         "422": { description: 不符合 annotations.v1 }
 
+  /projects/{id}/refine:
+    post:
+      summary: AI 精修（階段 5–6）：轉錄定位笑點 offset + Bedrock 敘事填台詞
+      description: >
+        轉錄影片（Transcribe）→ 依語音情緒峰提議每個高光的校正 offset、並以 Bedrock Nova
+        填 annotations 的 description/dimension.text/beat.line。離線走 Stub 罐頭；真值需上 AWS。
+        預設只提議 offset（交編輯器 PATCH 確認）；apply_offsets=true 才自動套用。
+      operationId: refineProject
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RefineRequest" }
+      responses:
+        "200":
+          description: 已精修（回提議 offset + enriched annotations）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RefineResult" }
+        "404": { description: project 不存在 }
+        "409": { description: 狀態不允許精修，或無 highlights }
+
   /projects/{id}/timeline:
     get:
       summary: 讀取目前（最新版）Timeline（timeline.v1 投影）
@@ -806,6 +830,36 @@ components:
         start_ms: { type: integer }
         end_ms: { type: integer }
         duration_ms: { type: integer, nullable: true }
+
+    RefineRequest:
+      type: object
+      description: AI 精修請求（欄位皆 optional）
+      properties:
+        apply_offsets: { type: boolean, default: false, description: true=直接套用提議 offset；false=只提議 }
+        params: { type: object, additionalProperties: true, description: 精修參數覆寫（lead_ms 等） }
+
+    ProposedOffset:
+      type: object
+      required: [highlight_id, current_start_ms, proposed_start_ms, offset_ms]
+      description: AI 逐字稿定位笑點的校正提議
+      properties:
+        highlight_id: { type: string }
+        current_start_ms: { type: integer }
+        proposed_start_ms: { type: integer }
+        offset_ms: { type: integer, description: 往前抓為負、延後為正 }
+        evidence_text: { type: string, nullable: true, description: 笑點段落台詞 }
+
+    RefineResult:
+      type: object
+      required: [project_id, annotations, transcript_segment_count]
+      properties:
+        project_id: { type: string }
+        proposed_offsets:
+          type: array
+          items: { $ref: "#/components/schemas/ProposedOffset" }
+        annotations: { $ref: "#/components/schemas/Annotations" }
+        transcript_segment_count: { type: integer }
+        applied: { type: integer, description: 已自動套用的 offset 數 }
 
     TimelineClip:
       type: object

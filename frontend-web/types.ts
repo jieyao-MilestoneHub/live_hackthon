@@ -1,4 +1,4 @@
-// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.5.0).
+// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.6.0).
 // Project / millisecond model (M1). Source of truth: ../contracts/openapi.yaml
 // and ../contracts/*.v1.schema.json — keep in sync when the contract changes.
 // All times are integers in milliseconds (ms). Core entity is Project (not job).
@@ -271,6 +271,32 @@ export interface VideoTimebaseRequest {
   source_duration_ms?: number;
 }
 
+/** Request body for POST /projects/{id}/refine (openapi: RefineRequest). */
+export interface RefineRequest {
+  /** true=直接套用提議 offset；false=只提議，交編輯器 PATCH 確認。 */
+  apply_offsets?: boolean;
+  params?: Record<string, unknown>;
+}
+
+/** AI 逐字稿定位笑點的校正提議（openapi: ProposedOffset）。 */
+export interface ProposedOffset {
+  highlight_id: string;
+  current_start_ms: number;
+  proposed_start_ms: number;
+  /** 往前抓為負、延後為正。 */
+  offset_ms: number;
+  evidence_text?: string | null;
+}
+
+/** Response of POST /projects/{id}/refine (openapi: RefineResult). */
+export interface RefineResult {
+  project_id: string;
+  proposed_offsets: ProposedOffset[];
+  annotations: Annotations;
+  transcript_segment_count: number;
+  applied: number;
+}
+
 /** Request body for PATCH /projects/{id}/highlights/{highlight_id} (openapi: HighlightPatch). */
 export interface HighlightPatch {
   /** 事件窗相對目前窗的位移；往前抓為負（如 -20000）、延後為正。累加進 correction.offset_ms。 */
@@ -292,10 +318,36 @@ export interface TimelineClip {
   timeline_end_ms: number;
 }
 
-/** Subtitle settings (contract: free-form object; sample: { enabled, mode }). */
+/**
+ * One subtitle style layer (字型/字體/顏色/邊框/位置). Mirrors backend
+ * creative/style.py SubtitleStyle. All optional — backend fills preset defaults.
+ * `alignment` uses ASS numpad 1–9 (2 = bottom-center, 8 = top-center).
+ */
+export interface SubtitleStyle {
+  font_family?: string;
+  font_size?: number;
+  bold?: boolean;
+  primary_color?: string;   // #RRGGBB
+  outline_color?: string;   // #RRGGBB
+  outline_width?: number;   // border px
+  shadow?: number;
+  alignment?: number;       // 1–9 (numpad)
+  margin_v?: number;
+  margin_l?: number;
+  margin_r?: number;
+}
+
+/**
+ * Subtitle settings (contract: free-form object). `mode` picks the two-tier
+ * layers: 'both' (default) = 逐字稿 caption + 爆點 keyword; 'caption' = only
+ * transcript; 'keyword' = only punchline keyword. `style` overrides per layer
+ * (or flat = both). `keyword.animation` tunes the pop-in of keyword captions.
+ */
 export interface SubtitleSettings {
   enabled: boolean;
-  mode?: string;
+  mode?: 'both' | 'caption' | 'keyword' | string;
+  style?: (SubtitleStyle & { caption?: SubtitleStyle; keyword?: SubtitleStyle });
+  keyword?: { animation?: { type?: string; duration_ms?: number } };
 }
 
 /** Effect settings (contract: free-form object; sample: { enabled, intensity }). */

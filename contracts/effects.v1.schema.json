@@ -19,14 +19,14 @@
   "$defs": {
     "effect": {
       "type": "object",
-      "description": "兩種形狀：ranged（區間特效，如 zoom_in）或 point（點狀轉場，如 flash_transition）。",
+      "description": "兩種形狀：ranged（區間特效，如 zoom_in）或 point（點狀轉場，如 flash_transition）。type 為自由字串，由 creative/effects_registry.py 的 EffectStrategy 註冊表決定可用類型（OCP：新增特效＝註冊，不改契約）。",
       "oneOf": [
         {
           "type": "object",
           "required": ["type", "start_ms", "end_ms"],
           "additionalProperties": false,
           "properties": {
-            "type": { "type": "string", "description": "區間特效類型，如 zoom_in / pan / shake" },
+            "type": { "type": "string", "description": "區間特效類型（已註冊），如 zoom_in / pan / shake" },
             "start_ms": { "type": "integer", "minimum": 0 },
             "end_ms": { "type": "integer", "minimum": 0 },
             "strength": { "type": "number", "minimum": 0, "maximum": 1 }
@@ -37,7 +37,7 @@
           "required": ["type", "at_ms"],
           "additionalProperties": false,
           "properties": {
-            "type": { "type": "string", "description": "點狀轉場類型，如 flash_transition / cut" },
+            "type": { "type": "string", "description": "點狀轉場類型（已註冊），如 flash_transition / crossfade / fade / cut。用於降低拼接卡點。" },
             "at_ms": { "type": "integer", "minimum": 0 },
             "duration_ms": { "type": "integer", "minimum": 0 }
           }

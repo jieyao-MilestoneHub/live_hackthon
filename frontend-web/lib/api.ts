@@ -1,4 +1,4 @@
-// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.5.0).
+// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.6.0).
 // Base URL from NEXT_PUBLIC_API_BASE_URL (baked at build time). If a call fails
 // — backend unreachable, or a not-yet-built endpoint returns 501 — we fall back
 // to local mock data so the editor still drives a plausible flow in dev.

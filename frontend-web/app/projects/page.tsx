@@ -171,20 +171,18 @@ function UploadRegion({
       await uploadToS3(projectId, session, file, setPct);
 
       if (isChat && logFile) {
-        // 1) upload the chat-room LOG CSV via a presigned single-part PUT
-        setStep('上傳聊天室 LOG…');
-        const chatSession = await createChatUpload(projectId);
-        await uploadChatCsv(chatSession, logFile);
-        // 2) link the video timebase (duration keeps chat cuts in-range)
+        // 1) link the video timebase FIRST, so the auto-analysis sees source_duration_ms.
         const durationMs = await readVideoDurationMs(file);
         if (durationMs) {
           await setVideoTimebase(projectId, { source_duration_ms: durationMs });
         }
-        // 3) chat analysis (→ COMPOSING), then compose (→ READY_TO_EDIT)
-        setStep('分析彈幕熱度…');
-        await analyzeProject(projectId, durationMs ? { source_duration_ms: durationMs } : {});
-        setStep('組出初始剪輯…');
-        await composeTimeline(projectId, {});
+        // 2) upload the chat LOG — dropping chat.csv AUTO-triggers the whole
+        //    pipeline (analyze → compose → render → artifact) via the chat_starter
+        //    Lambda. The UI must NOT also call analyze/compose (they'd 409 / race
+        //    the auto-trigger); it just polls the project status to ARTIFACT_READY.
+        setStep('上傳聊天室 LOG，啟動自動分析與渲染…');
+        const chatSession = await createChatUpload(projectId);
+        await uploadChatCsv(chatSession, logFile);
       }
       onUploaded();
     } catch (err) {

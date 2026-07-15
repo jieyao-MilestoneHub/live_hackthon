@@ -60,6 +60,10 @@ module "backend_lambda" {
   reserved_concurrency = var.backend_reserved_concurrency
   moderation_enabled   = var.moderation_enabled
 
+  # Cognito JWT authorizer on the API (blocks anonymous callers from the pipeline).
+  cognito_client_id = module.auth.user_pool_client_id
+  cognito_issuer    = module.auth.user_pool_endpoint
+
   # When set, POST /renders StartExecutions the render workflow (async) instead
   # of running Creative Planning inline, and grants states:StartExecution.
   render_state_machine_arn = module.render_workflow.state_machine_arn
@@ -119,7 +123,6 @@ module "render_batch" {
   image_uri = var.render_image
   env       = var.env
 
-  # Sized for real FFmpeg on large sources (streamed to disk, but decode/encode
   # of a long 1080p source needs CPU + headroom). 50 GiB ephemeral holds a 10GB
   # streamed source.mp4 + temp segments. max_vcpus scales concurrent renders for
   # the batch demo (job_vcpu=2 → max_vcpus/2 concurrent).

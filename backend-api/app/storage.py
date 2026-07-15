@@ -151,9 +151,18 @@ class StubStorage(Storage):
 class S3Storage(Storage):
     def __init__(self, settings: Settings) -> None:
         import boto3  # lazy import
+        from botocore.config import Config
 
         self._settings = settings
-        self._client = boto3.client("s3", region_name=settings.aws_region)
+        # Force SigV4 presigning. A SigV2 presigned PUT bakes a Content-Type into
+        # the signature (StringToSign), so a browser PUT that doesn't send that
+        # exact Content-Type gets SignatureDoesNotMatch (403). SigV4 signs only the
+        # host (UNSIGNED-PAYLOAD), so the browser's presigned video/chat upload works.
+        self._client = boto3.client(
+            "s3",
+            region_name=settings.aws_region,
+            config=Config(signature_version="s3v4"),
+        )
 
     def create_upload_session(
         self, key: str, part_count: int, content_type: str | None = None

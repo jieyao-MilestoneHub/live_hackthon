@@ -1,0 +1,28 @@
+[project]
+name = "crestcut"
+version = "0.1.0"
+description = "crestcut — ride your livestream's crests into clips. A decoupled CLI for the 浪 LIVE highlight-detection + clip editor."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+keywords = ["livestream", "highlights", "clip", "video", "cli", "lang-live"]
+# Intentionally ZERO runtime dependencies: the CLI is a decoupled, stdlib-only
+# HTTP client bound to the 浪 LIVE contract (contracts/openapi.yaml). It never
+# imports backend internals and carries no AWS SDK — AWS is reached only through
+# the API + presigned URLs. See README.md ("Architecture").
+dependencies = []
+
+[project.scripts]
+crestcut = "crestcut.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["crestcut", "crestcut.commands"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"

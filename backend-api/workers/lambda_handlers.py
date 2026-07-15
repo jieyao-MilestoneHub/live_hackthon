@@ -507,16 +507,17 @@ def starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             if not parsed:
                 continue
             tenant_id, project_id = parsed
-            # analysis_source gate: chat-LOG projects produce highlights via the
-            # synchronous POST /analyze (chat volume), NOT this auto video→Transcribe
-            # path. Skipping StartExecution prevents the Transcribe run from clobbering
-            # chat highlights or flipping the project to FAILED on the
-            # ANALYZING→COMPOSING transition assert. Video-only projects
-            # (analysis_source="transcribe", the default) proceed as before.
+            # Fire the auto video→Transcribe workflow ONLY for a project that exists
+            # AND is explicitly analysis_source=transcribe. A chat project (or one not
+            # yet created when source.mp4 lands) must never run Transcribe — it would
+            # race/clobber the chat pipeline (and fails outright on >2 GB). The
+            # video-only flow creates the project (analysis_source="transcribe", the
+            # default) via the API before upload completes, so it still proceeds.
             project = get_repository().get_project(project_id)
-            if project and project.get("analysis_source") == "chat":
+            if not project or project.get("analysis_source", "transcribe") != "transcribe":
                 log.info(
-                    "starter: project %s analysis_source=chat; skipping auto Transcribe StartExecution",
+                    "starter: project %s absent or not analysis_source=transcribe; "
+                    "skipping auto Transcribe StartExecution",
                     project_id,
                 )
                 continue

@@ -5,7 +5,7 @@
 // IdToken to API calls. Uses lib/auth.ts (plain fetch, no AWS SDK).
 
 import { useEffect, useState } from 'react';
-import { getUserEmail, isLoggedIn, login, logout } from '@/lib/auth';
+import { AUTH_EVENT, getUserEmail, isLoggedIn, login, logout } from '@/lib/auth';
 
 export default function LoginWidget() {
   // Start logged-out on the server/first paint, then hydrate from sessionStorage
@@ -20,7 +20,10 @@ export default function LoginWidget() {
 
   useEffect(() => {
     setReady(true);
-    if (isLoggedIn()) setEmail(getUserEmail());
+    const sync = () => setEmail(isLoggedIn() ? getUserEmail() : null);
+    sync();
+    window.addEventListener(AUTH_EVENT, sync);
+    return () => window.removeEventListener(AUTH_EVENT, sync);
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {

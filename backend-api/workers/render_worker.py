@@ -11,6 +11,7 @@ Project → ARTIFACT_READY。真 FFmpeg 編碼由 Batch 容器替換本模組的
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -27,6 +28,12 @@ from app.state import (
     assert_render_transition,
 )
 from app.storage import Storage
+
+log = logging.getLogger(__name__)
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _now_iso() -> str:
@@ -70,6 +77,7 @@ class EncodeInputs:
     effects: dict[str, Any]
     render_spec: dict[str, Any]
     source_path: str | None = None  # local path to a streamed source.mp4 (real encoder)
+    subtitle: dict[str, Any] | None = None  # subtitle.v1 (+style) for styled ASS burn
 
 
 class Encoder(Protocol):
@@ -94,11 +102,22 @@ class StubEncoder:
 
 def get_encoder() -> Encoder:
     """Pick the encoder. Defaults to stub; the Batch container opts into ffmpeg
-    via RENDER_ENCODER=ffmpeg so existing offline tests are unaffected."""
-    if os.environ.get("RENDER_ENCODER", "stub").strip().lower() == "ffmpeg":
+    via RENDER_ENCODER=ffmpeg so existing offline tests are unaffected.
+
+    Fail-closed: when ``RENDER_REQUIRE_FFMPEG`` is set (the real Batch render path
+    sets it), a missing / typo'd ``RENDER_ENCODER`` raises instead of silently
+    falling back to the stub — so a config drift can never publish a placeholder
+    as a real artifact."""
+    kind = os.environ.get("RENDER_ENCODER", "stub").strip().lower()
+    if kind == "ffmpeg":
         from workers.render.ffmpeg_encoder import FFmpegEncoder  # lazy: heavy deps
 
         return FFmpegEncoder()
+    if _env_truthy("RENDER_REQUIRE_FFMPEG"):
+        raise RuntimeError(
+            f"RENDER_REQUIRE_FFMPEG is set but RENDER_ENCODER={kind!r} (not 'ffmpeg') — "
+            "refusing to stub-render on the real path"
+        )
     return StubEncoder()
 
 
@@ -130,6 +149,8 @@ def run(
     """Render a QUEUED render to a published Artifact. Returns the artifact.v1 manifest."""
     settings = get_settings()
     encoder = encoder or get_encoder()
+    log.info("render %s: encoder=%s needs_source=%s", render_id,
+             type(encoder).__name__, getattr(encoder, "needs_source", False))
     project = repo.get_project(project_id)
     render = repo.get_render(project_id, render_id)
     if project is None or render is None:
@@ -177,6 +198,7 @@ def run(
                 subtitle_vtt=subtitle_vtt,
                 effects=effects,
                 render_spec=render_spec,
+                subtitle=subtitle,
             ))
     else:
         media = encoder.encode(EncodeInputs(
@@ -186,8 +208,17 @@ def run(
             subtitle_vtt=subtitle_vtt,
             effects=effects,
             render_spec=render_spec,
+            subtitle=subtitle,
         ))
     video_bytes = media["final"]
+    # Fail-closed sanity check: a source-consuming (real) encoder must produce a
+    # real MP4 — never a stub/text placeholder. Rejects a silent stub or a corrupt
+    # encode BEFORE it is published as an artifact.
+    if getattr(encoder, "needs_source", False) and b"ftyp" not in video_bytes[:64]:
+        raise RuntimeError(
+            f"render {render_id}: {type(encoder).__name__} produced non-MP4 output "
+            f"({len(video_bytes)} bytes, no ftyp box) — refusing to publish a stub/corrupt artifact"
+        )
     storage.put_bytes(ob, out["video_key"], video_bytes, "video/mp4")
     storage.put_bytes(ob, out["preview_key"], media["preview"], "video/mp4")
     storage.put_bytes(ob, out["thumbnail_key"], media["thumbnail"], "image/jpeg")
