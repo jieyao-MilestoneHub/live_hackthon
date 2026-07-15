@@ -13,6 +13,7 @@ import {
   getProject,
   getRender,
   getTimeline,
+  listArtifacts,
   setVideoTimebase,
   updateTimeline,
   uploadChatCsv,
@@ -26,12 +27,14 @@ import {
 } from '@/types';
 import type {
   AnalysisSource,
+  Artifact,
   AspectRatio,
   ComposeRequest,
   Highlight,
   Project,
   Render,
   RenderCreated,
+  Route,
   Timeline,
   TimelineClip,
 } from '@/types';
@@ -41,6 +44,9 @@ import ScoreMeter from '@/components/ScoreMeter';
 import HighlightWave from '@/components/HighlightWave';
 
 const POLL_INTERVAL_MS = 2000;
+
+/** 雙軌分流：下載鍵的路線標籤。 */
+const ROUTE_LABEL: Record<Route, string> = { pipeline: 'Pipeline 版', agent: 'AI Agent 版' };
 
 const ASPECTS: AspectRatio[] = ['16:9', '9:16', '1:1'];
 const ASPECT_CSS: Record<AspectRatio, string> = {
@@ -312,8 +318,9 @@ function EditorRegions({
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [recomposing, setRecomposing] = useState(false);
   const [renderErr, setRenderErr] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadErr, setDownloadErr] = useState<string | null>(null);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
 
   function toggle(set: Set<string>, id: string): Set<string> {
     const next = new Set(set);
@@ -401,18 +408,28 @@ function EditorRegions({
     }
   }
 
-  const artifactId = render?.artifact_id || project.latest_artifact_id;
+  const fallbackArtifactId = render?.artifact_id || project.latest_artifact_id;
   const renderActive = !!render && !RENDER_TERMINAL_STATES.has(render.status);
   const renderDone =
     render?.status === 'SUCCEEDED' || project.status === 'ARTIFACT_READY';
 
-  async function handleDownload() {
-    if (!artifactId) {
-      setDownloadErr('尚無可下載的成品。');
-      return;
-    }
+  // 雙軌分流：成品就緒後列出所有 route 的 artifact，各給一顆下載鍵。
+  useEffect(() => {
+    if (!renderDone) return;
+    let active = true;
+    listArtifacts(project.project_id)
+      .then((a) => {
+        if (active) setArtifacts(a);
+      })
+      .catch((err) => console.error(err));
+    return () => {
+      active = false;
+    };
+  }, [renderDone, project.project_id, render?.status]);
+
+  async function handleDownload(artifactId: string) {
     setDownloadErr(null);
-    setDownloading(true);
+    setDownloading(artifactId);
     try {
       const { url } = await getDownloadUrl(artifactId);
       window.open(url, '_blank', 'noopener,noreferrer');
@@ -420,7 +437,7 @@ function EditorRegions({
       console.error(err);
       setDownloadErr('取得下載連結失敗，請重試。');
     } finally {
-      setDownloading(false);
+      setDownloading(null);
     }
   }
 
@@ -658,8 +675,29 @@ function EditorRegions({
             >
               {saving ? '儲存中…' : 'Save Draft'}
             </button>
-            {renderDone && artifactId ? (
-              <button className="btn" onClick={handleDownload} disabled={downloading}>
+            {renderDone && artifacts.length > 0 ? (
+              // 雙軌分流：每個 route 一顆下載鍵，使用者自由下載。
+              [...artifacts]
+                .sort((a, b) => (a.route ?? '').localeCompare(b.route ?? ''))
+                .map((a) => (
+                  <button
+                    key={a.artifact_id}
+                    className="btn"
+                    onClick={() => handleDownload(a.artifact_id)}
+                    disabled={downloading === a.artifact_id}
+                    title={`下載 ${a.route ?? 'pipeline'} 版成品`}
+                  >
+                    {downloading === a.artifact_id
+                      ? '取得連結…'
+                      : `下載成品（${ROUTE_LABEL[a.route ?? 'pipeline']}）⬇`}
+                  </button>
+                ))
+            ) : renderDone && fallbackArtifactId ? (
+              <button
+                className="btn"
+                onClick={() => fallbackArtifactId && handleDownload(fallbackArtifactId)}
+                disabled={!!downloading}
+              >
                 {downloading ? '取得連結…' : '下載成品 ⬇'}
               </button>
             ) : (

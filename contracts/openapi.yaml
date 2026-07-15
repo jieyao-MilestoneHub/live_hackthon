@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: 浪 LIVE Editor API
-  version: 0.4.0
+  version: 0.5.0
   description: >
     影片高光剪輯「編輯器控制面」API（前後端共用契約）。M1 Project/毫秒版：
     核心實體為 Project、時間一律毫秒（ms）、雙 pipeline（分析組片 + 渲染）。
@@ -361,6 +361,22 @@ paths:
               schema: { $ref: "#/components/schemas/RenderCreated" }
         "404": { description: 不存在 }
         "501": { description: 尚未實作（M3/M4 Render pipeline） }
+
+  /projects/{id}/artifacts:
+    get:
+      summary: 列出 project 的所有成品（雙軌分流：每個 route 一份，供使用者自由下載）
+      operationId: listArtifacts
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Artifact" }
+        "404": { description: 不存在 }
 
   /renders/{render_id}:
     get:
@@ -792,6 +808,10 @@ components:
       description: 提交 Render；預設使用最新 timeline 版本
       properties:
         timeline_version: { type: integer, description: 省略則使用 latest_timeline_version }
+        route:
+          type: string
+          enum: [pipeline, agent]
+          description: 創意路線（省略＝pipeline）。雙軌分流由 compose 後自動各建一個 route 的 render。
 
     RenderCreated:
       type: object
@@ -807,6 +827,7 @@ components:
         render_id: { type: string }
         project_id: { type: string }
         status: { $ref: "#/components/schemas/RenderState" }
+        route: { type: string, enum: [pipeline, agent], description: 創意路線（省略＝pipeline） }
         current_stage: { type: string }
         timeline_version: { type: integer }
         effect_seed: { type: integer }
@@ -826,6 +847,7 @@ components:
         artifact_id: { type: string }
         project_id: { type: string }
         render_id: { type: string }
+        route: { type: string, enum: [pipeline, agent], description: 產出此成品的創意路線（省略＝pipeline） }
         timeline_version: { type: integer }
         status: { type: string, enum: [READY, FAILED] }
         duration_ms: { type: integer }

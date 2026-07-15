@@ -165,17 +165,23 @@ def main() -> int:
 
     if args.render:
         storage = get_storage()
-        render = creative_worker.submit_render(repo, storage, project_id)
-        print(
-            f"[pipeline] plan     -> {render['render_id']}, status -> {render['status']}, "
-            f"effect_seed={render['effect_seed']}, timeline v{render['timeline_version']}"
-        )
-        artifact = render_worker.run(repo, storage, project_id, render["render_id"])
-        print(
-            f"[pipeline] render   -> artifact {artifact['artifact_id']}, status -> READY, "
-            f"{artifact['resolution']['width']}x{artifact['resolution']['height']}, "
-            f"video_key={artifact['files']['video_key']}, status -> SUCCEEDED / ARTIFACT_READY"
-        )
+        # 雙軌分流：compose 後對 pipeline + agent 兩路各建 render + 規劃 + 編碼，各產一份成品。
+        renders = creative_worker.submit_render_routes(repo, storage, project_id)
+        for render in renders:
+            route = render.get("route", "pipeline")
+            print(
+                f"[pipeline] plan[{route}] -> {render['render_id']}, status -> {render['status']}, "
+                f"effect_seed={render['effect_seed']}, timeline v{render['timeline_version']}"
+            )
+            artifact = render_worker.run(repo, storage, project_id, render["render_id"])
+            print(
+                f"[pipeline] render[{route}] -> artifact {artifact['artifact_id']} (route={artifact.get('route')}), "
+                f"{artifact['resolution']['width']}x{artifact['resolution']['height']}, "
+                f"video_key={artifact['files']['video_key']}"
+            )
+        arts = repo.list_artifacts(project_id)
+        print(f"[pipeline] artifacts -> {len(arts)} downloadable: "
+              + ", ".join(f"{a.get('route')}={a['artifact_id']}" for a in arts))
 
     print(f"[pipeline] DONE. project_id = {project_id}")
     return 0

@@ -33,7 +33,15 @@ from app.repository import get_repository
 from app.settings import get_settings
 from app.state import ProjectState, RenderState, advance_to_analyzing
 from app.storage import get_storage
+from creative import DUAL_TRACK_ROUTES
 from workers import analysis_worker, chat_analysis_worker, composer_worker, creative_worker
+
+
+def _dual_track_routes() -> tuple[str, ...]:
+    """雙軌分流 routes：DUAL_TRACK 預設 on（pipeline+agent）；關則只跑 pipeline。"""
+    if os.environ.get("DUAL_TRACK", "on").strip().lower() in {"0", "false", "off", "no"}:
+        return ("pipeline",)
+    return DUAL_TRACK_ROUTES
 
 log = logging.getLogger(__name__)
 
@@ -206,8 +214,11 @@ def mark_render_failed(event: dict[str, Any], context: Any = None) -> dict[str, 
         except KeyError:
             pass
     if project_id:
+        # 雙軌分流：若另一路已產出成品（ARTIFACT_READY），別被這一路的失敗拖回 READY_TO_EDIT。
         try:
-            repo.update_project(project_id, {"status": ProjectState.READY_TO_EDIT.value})
+            project = repo.get_project(project_id)
+            if project and project.get("status") != ProjectState.ARTIFACT_READY.value:
+                repo.update_project(project_id, {"status": ProjectState.READY_TO_EDIT.value})
         except KeyError:
             pass
     return {"project_id": project_id, "render_id": render_id, "status": RenderState.FAILED.value}
@@ -351,13 +362,18 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             timeline,
         )
 
-        # 4) render: create record + StartExecution on the render workflow
-        render = creative_worker.create_render_record(repo, project_id, timeline["version"])
-        exec_arn = orchestration.start_render(render["render_id"], project_id, timeline["version"])
-        started.append({
-            "project_id": project_id,
-            "render_id": render["render_id"],
-            "execution_arn": exec_arn,
-            "highlight_count": len(result["highlights"]),
-        })
+        # 4) render: 雙軌分流——每個 route 各建 record + StartExecution（兩個獨立 execution，
+        #    route 掛在 render item 上、由 plan_creative 讀取選規劃器；encode 共用不需帶 route）。
+        for route in _dual_track_routes():
+            render = creative_worker.create_render_record(
+                repo, project_id, timeline["version"], route=route
+            )
+            exec_arn = orchestration.start_render(render["render_id"], project_id, timeline["version"])
+            started.append({
+                "project_id": project_id,
+                "render_id": render["render_id"],
+                "route": route,
+                "execution_arn": exec_arn,
+                "highlight_count": len(result["highlights"]),
+            })
     return {"started": started}

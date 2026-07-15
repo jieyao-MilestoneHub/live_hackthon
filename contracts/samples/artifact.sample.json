@@ -3,6 +3,7 @@
   "artifact_id": "artifact-789",
   "project_id": "project-123",
   "render_id": "render-456",
+  "route": "pipeline",
   "timeline_version": 1,
   "status": "READY",
   "duration_ms": 29800,

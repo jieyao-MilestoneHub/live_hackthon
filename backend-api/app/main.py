@@ -29,6 +29,7 @@ from app.schemas import (
     AnalyzeRequest,
     AnalyzeResult,
     Annotations,
+    Artifact,
     ChatUploadUrl,
     ComposeRequest,
     DownloadUrl,
@@ -584,12 +585,13 @@ def create_render(
     if repo.get_project(id) is None:
         raise HTTPException(status_code=404, detail="project not found")
     req = body or RenderCreate()
+    route = req.route or "pipeline"
     try:
         if os.environ.get("RENDER_STATE_MACHINE_ARN"):
-            render = creative_worker.create_render_record(repo, id, req.timeline_version)
+            render = creative_worker.create_render_record(repo, id, req.timeline_version, route=route)
             orchestration.start_render(render["render_id"], id, render["timeline_version"])
         else:
-            render = creative_worker.submit_render(repo, storage, id, req.timeline_version)
+            render = creative_worker.submit_render(repo, storage, id, req.timeline_version, route=route)
             # Dev-mode offline shim: with no Batch/state machine, also run the
             # (stub) encode inline so a local CLI/agent gets a finished artifact to
             # download. Opt-in via RENDER_INLINE_ENCODE (default off keeps tests,
@@ -613,6 +615,17 @@ def get_render(
     if render is None:
         raise HTTPException(status_code=404, detail="render not found")
     return Render(**render)
+
+
+@app.get("/projects/{id}/artifacts", response_model=list[Artifact])
+def list_artifacts(
+    id: str,
+    repo: ProjectRepository = Depends(get_repository),
+) -> list[Artifact]:
+    """雙軌分流：列出 project 全部成品（每個 route 一份），供前端各給一顆下載鍵。"""
+    if repo.get_project(id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return [Artifact(**a) for a in repo.list_artifacts(id)]
 
 
 @app.get("/artifacts/{artifact_id}/download", response_model=DownloadUrl)

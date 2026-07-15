@@ -364,6 +364,9 @@ class RenderCreate(BaseModel):
     timeline_version: int | None = Field(
         default=None, description="省略則使用 latest_timeline_version"
     )
+    route: Literal["pipeline", "agent"] | None = Field(
+        default=None, description="創意路線（省略＝pipeline）"
+    )
 
 
 class RenderCreated(BaseModel):
@@ -379,6 +382,7 @@ class Render(BaseModel):
     render_id: str
     project_id: str
     status: RenderState
+    route: Literal["pipeline", "agent"] | None = None
     current_stage: str | None = None
     timeline_version: int
     effect_seed: int | None = None
@@ -397,6 +401,7 @@ class Artifact(BaseModel):
     artifact_id: str
     project_id: str
     render_id: str
+    route: Literal["pipeline", "agent"] | None = None
     timeline_version: int | None = None
     status: str
     duration_ms: int | None = None

@@ -9,6 +9,7 @@
 // downloadable sample artifact.
 
 import type {
+  Artifact,
   DownloadUrl,
   Highlight,
   HighlightList,
@@ -17,6 +18,7 @@ import type {
   Render,
   RenderCreated,
   RenderState,
+  Route,
   Timeline,
   UploadSession,
 } from '@/types';
@@ -241,4 +243,21 @@ const SAMPLE_ARTIFACT_URL =
 
 export function mockDownloadUrl(_artifactId: string): DownloadUrl {
   return { url: SAMPLE_ARTIFACT_URL, expires_in_sec: 900 };
+}
+
+/** Two finished artifacts (one per route) so the dual-download UI renders offline. */
+export function mockListArtifacts(projectId: string): Artifact[] {
+  const routes: Route[] = ['pipeline', 'agent'];
+  return routes.map((route) => ({
+    artifact_id: `mock_artifact_${route}_${projectId}`,
+    project_id: projectId,
+    render_id: `mock_render_${route}_${projectId}`,
+    route,
+    timeline_version: 1,
+    status: 'READY',
+    duration_ms: 29800,
+    aspect_ratio: '9:16',
+    resolution: { width: 1080, height: 1920 },
+    created_at: '2026-07-14T10:06:00Z',
+  }));
 }

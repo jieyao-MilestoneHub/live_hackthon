@@ -1,4 +1,4 @@
-// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.4.0).
+// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.5.0).
 // Project / millisecond model (M1). Source of truth: ../contracts/openapi.yaml
 // and ../contracts/*.v1.schema.json — keep in sync when the contract changes.
 // All times are integers in milliseconds (ms). Core entity is Project (not job).
@@ -371,10 +371,15 @@ export interface TimelineVersionResponse {
   timeline_version: number;
 }
 
+/** 創意路線（雙軌分流）：pipeline=規則式管線 / agent=AI agent。 */
+export type Route = 'pipeline' | 'agent';
+
 /** Request body for POST /projects/{id}/renders (openapi: RenderCreate). */
 export interface RenderCreate {
   /** Omit to use the project's latest timeline version. */
   timeline_version?: number;
+  /** 創意路線（省略＝pipeline）。 */
+  route?: Route;
 }
 
 /** Response of POST /projects/{id}/renders — 202 (openapi: RenderCreated). */
@@ -388,6 +393,7 @@ export interface Render {
   render_id: string;
   project_id: string;
   status: RenderState;
+  route?: Route;
   /** Human-facing stage label while running (e.g. PLANNING_SUBTITLES). */
   current_stage?: string;
   timeline_version?: number;
@@ -397,6 +403,22 @@ export interface Render {
   created_at?: string;
   started_at?: string;
   completed_at?: string;
+}
+
+/** One finished artifact (openapi: Artifact; projection of artifact.v1). One per route. */
+export interface Artifact {
+  artifact_id: string;
+  project_id: string;
+  render_id: string;
+  route?: Route;
+  timeline_version?: number;
+  status: 'READY' | 'FAILED';
+  duration_ms?: number;
+  aspect_ratio?: AspectRatio;
+  resolution?: { width: number; height: number };
+  size_bytes?: number;
+  files?: Record<string, string>;
+  created_at?: string;
 }
 
 /** Response of GET /artifacts/{artifact_id}/download (openapi: DownloadUrl). */

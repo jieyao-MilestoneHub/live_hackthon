@@ -11,6 +11,11 @@
     "artifact_id": { "type": "string" },
     "project_id": { "type": "string" },
     "render_id": { "type": "string" },
+    "route": {
+      "type": "string",
+      "enum": ["pipeline", "agent"],
+      "description": "產出此成品的創意路線：pipeline=規則式管線 / agent=AI agent。雙軌分流下同一 project 可有多個 route 的 artifact 供使用者自由下載。未提供時視為 pipeline。"
+    },
     "timeline_version": { "type": "integer", "minimum": 1 },
     "status": { "type": "string", "enum": ["READY", "FAILED"], "description": "產物層級狀態（有別於 Render/Project 狀態機）" },
     "duration_ms": { "type": "integer", "minimum": 0, "description": "成片長度（毫秒）" },

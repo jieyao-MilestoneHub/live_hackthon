@@ -10,6 +10,7 @@
 import type {
   AnalyzeRequest,
   AnalyzeResult,
+  Artifact,
   ChatUploadUrl,
   ComposeRequest,
   DownloadUrl,
@@ -19,6 +20,7 @@ import type {
   ProjectCreated,
   Render,
   RenderCreated,
+  Route,
   Timeline,
   TimelineVersionResponse,
   UploadCompleted,
@@ -32,6 +34,7 @@ import {
   markMockAnalysisStart,
   mockCreateRender,
   mockDownloadUrl,
+  mockListArtifacts,
   mockHighlightList,
   mockProject,
   mockProjectStatusFor,
@@ -358,20 +361,31 @@ export async function composeTimeline(
 export async function createRender(
   projectId: string,
   timelineVersion?: number,
+  route?: Route,
 ): Promise<RenderCreated> {
   try {
+    const body: Record<string, unknown> = {};
+    if (timelineVersion != null) body.timeline_version = timelineVersion;
+    if (route) body.route = route;
     return await request<RenderCreated>(
       `/projects/${encodeURIComponent(projectId)}/renders`,
-      {
-        method: 'POST',
-        body: JSON.stringify(
-          timelineVersion != null ? { timeline_version: timelineVersion } : {},
-        ),
-      },
+      { method: 'POST', body: JSON.stringify(body) },
     );
   } catch (err) {
     console.warn('[api] createRender fell back to mock:', err);
     return mockCreateRender(projectId);
+  }
+}
+
+/** GET /projects/{id}/artifacts — all finished artifacts (one per route). Mock on offline. */
+export async function listArtifacts(projectId: string): Promise<Artifact[]> {
+  try {
+    return await request<Artifact[]>(
+      `/projects/${encodeURIComponent(projectId)}/artifacts`,
+    );
+  } catch (err) {
+    console.warn('[api] listArtifacts fell back to mock:', err);
+    return mockListArtifacts(projectId);
   }
 }
 
