@@ -50,7 +50,12 @@ from app.schemas import (
     VideoTimebaseRequest,
 )
 from app.settings import get_settings
-from app.state import InvalidTransition, ProjectState, assert_project_transition
+from app.state import (
+    InvalidTransition,
+    ProjectState,
+    advance_to_analyzing,
+    assert_project_transition,
+)
 from app.storage import Storage, get_storage, resolve_part_count
 from workers import (
     annotation_worker,
@@ -290,30 +295,7 @@ def patch_highlight(
     return Highlight(**updated)
 
 
-# Ordered pre-analysis states the S3-event pipeline walks through before ANALYZING.
-_TO_ANALYZING_ORDER = [
-    ProjectState.CREATED,
-    ProjectState.UPLOAD_PENDING,
-    ProjectState.UPLOADING,
-    ProjectState.ANALYZING,
-]
-
-
-def _advance_to_analyzing(repo: ProjectRepository, project_id: str, current: ProjectState) -> None:
-    """Walk a project from a pre-analysis state up to ANALYZING (mirrors the S3-event trigger).
-
-    No-op if already ANALYZING. Raises ``InvalidTransition`` if the project is past
-    analysis (COMPOSING/READY_TO_EDIT/…) — re-analysis is out of scope for Slice 1.
-    """
-    if current is ProjectState.ANALYZING:
-        return
-    if current not in _TO_ANALYZING_ORDER[:-1]:
-        raise InvalidTransition(f"cannot analyze from {current.value}")
-    idx = _TO_ANALYZING_ORDER.index(current)
-    for target in _TO_ANALYZING_ORDER[idx + 1:]:
-        now = ProjectState(repo.get_project(project_id)["status"])
-        assert_project_transition(now, target)
-        repo.update_project(project_id, {"status": target.value})
+# ``advance_to_analyzing`` now lives in app.state (shared with the chat Starter).
 
 
 @app.post("/projects/{id}/chat-upload", response_model=ChatUploadUrl, status_code=201)
@@ -374,7 +356,7 @@ def analyze_project(
     storage.put_json(settings.work_bucket, settings.chatlog_key(tenant, id), chatlog)
 
     try:
-        _advance_to_analyzing(repo, id, ProjectState(project["status"]))
+        advance_to_analyzing(repo, id, ProjectState(project["status"]))
         result = chat_analysis_worker.run(
             repo,
             id,

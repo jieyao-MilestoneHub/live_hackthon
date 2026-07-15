@@ -21,17 +21,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any
 
 from analysis import highlights_llm
+from analysis.chatlog import clean_chatlog
 from app.aws import factory, orchestration
 from app.aws.config import get_attribution_config
 from app.repository import get_repository
 from app.settings import get_settings
-from app.state import ProjectState, RenderState
+from app.state import ProjectState, RenderState, advance_to_analyzing
 from app.storage import get_storage
-from workers import analysis_worker, composer_worker, creative_worker
+from workers import analysis_worker, chat_analysis_worker, composer_worker, creative_worker
 
 log = logging.getLogger(__name__)
 
@@ -267,4 +269,92 @@ def starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             project_id, tenant_id=tenant_id, bucket=bucket, key=key, version_id=version_id
         )
         started.append({"project_id": project_id, "execution_arn": exec_arn})
+    return {"started": started}
+
+
+def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    """SQS handler for chat.csv uploads (EventBridge S3 'Object Created' on
+    ``…/source/chat.csv``). Runs the FULL chat pipeline so a bare S3 drop yields an
+    artifact: auto-create the project if missing → clean → analyze (chat volume) →
+    compose → StartExecution the render workflow. Idempotent: skips a project that
+    is already past the pre-analysis states."""
+    settings = get_settings()
+    repo = get_repository()
+    storage = get_storage()
+    started: list[dict[str, Any]] = []
+    for record in event.get("Records", []):
+        body = record.get("body")
+        detail = json.loads(body) if isinstance(body, str) else (body or {})
+        detail = detail.get("detail", detail)  # unwrap EventBridge envelope
+        bucket = (detail.get("bucket") or {}).get("name") or settings.raw_bucket
+        key = (detail.get("object") or {}).get("key")
+        parsed = _parse_source_key(key or "")
+        if not parsed:
+            log.warning("chat_starter: unparseable key %s", key)
+            continue
+        tenant_id, project_id = parsed
+
+        project = repo.get_project(project_id)
+        if project is None:
+            # Auto-create so a pure S3 drop (no prior POST /projects) works.
+            target = int(os.environ.get("CHAT_TARGET_DURATION_MS", "30000"))
+            repo.create_project({
+                "project_id": project_id,
+                "tenant_id": tenant_id,
+                "user_id": "s3-auto",
+                "title": None,
+                "status": ProjectState.CREATED.value,
+                "target_duration_ms": target,
+                "analysis_source": "chat",
+                "source_bucket": bucket,
+                "source_key": settings.source_key(tenant_id, project_id),
+                "latest_timeline_version": 0,
+            })
+            project = repo.get_project(project_id)
+
+        status = ProjectState(project["status"])
+        if status not in (
+            ProjectState.CREATED, ProjectState.UPLOAD_PENDING,
+            ProjectState.UPLOADING, ProjectState.ANALYZING,
+        ):
+            log.info("chat_starter: project %s already at %s; skip", project_id, status.value)
+            continue
+
+        # 1) chat.csv → chatlog.v1 (work bucket)
+        csv_bytes = storage.get_bytes(bucket, key)
+        chatlog = clean_chatlog(
+            csv_bytes.decode("utf-8-sig", errors="replace"),
+            project_id,
+            source={"bucket": bucket, "key": key},
+        )
+        if not chatlog["messages"]:
+            log.warning("chat_starter: 0 chat messages parsed for %s (key=%s)", project_id, key)
+            repo.update_project(project_id, {
+                "status": ProjectState.FAILED.value,
+                "error_message": "no chat messages parsed from chat.csv",
+            })
+            continue
+        storage.put_json(settings.work_bucket, settings.chatlog_key(tenant_id, project_id), chatlog)
+
+        # 2) analyze → COMPOSING (chat-relative timebase; no video probe in auto mode)
+        advance_to_analyzing(repo, project_id, ProjectState(repo.get_project(project_id)["status"]))
+        result = chat_analysis_worker.run(repo, project_id, chatlog)
+
+        # 3) compose → READY_TO_EDIT (+ persist timeline for the render plane)
+        timeline = composer_worker.run(repo, project_id)
+        storage.put_json(
+            settings.work_bucket,
+            settings.timeline_key(tenant_id, project_id, timeline["version"]),
+            timeline,
+        )
+
+        # 4) render: create record + StartExecution on the render workflow
+        render = creative_worker.create_render_record(repo, project_id, timeline["version"])
+        exec_arn = orchestration.start_render(render["render_id"], project_id, timeline["version"])
+        started.append({
+            "project_id": project_id,
+            "render_id": render["render_id"],
+            "execution_arn": exec_arn,
+            "highlight_count": len(result["highlights"]),
+        })
     return {"started": started}

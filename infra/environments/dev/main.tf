@@ -89,6 +89,11 @@ module "analysis_ingress" {
   dynamodb_table    = module.state_table.table_name
   table_arn         = module.state_table.table_arn
   state_machine_arn = module.analysis_workflow.state_machine_arn
+
+  # Chat-LOG ingress: chat_starter runs the full pipeline and StartExecutions render.
+  work_bucket              = module.storage_editor.work_bucket
+  output_bucket            = module.storage_editor.output_bucket
+  render_state_machine_arn = module.render_workflow.state_machine_arn
 }
 
 # --- Render plane (M2.2): POST /renders → StartExecution → Batch FFmpeg -----
