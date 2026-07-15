@@ -144,23 +144,24 @@ def main() -> int:
         f"(target={timeline['target_duration_ms']}ms), status -> READY_TO_EDIT"
     )
 
+    # 階段 7–8：結構化標註（起承轉合 5 維度 + beats）。兩條流程皆產出；chat 流程先落地
+    # chatlog 供 chat_highlights 取留言。composer/creative 也會就地產生，此處落地供編輯器可見。
+    storage = get_storage()
     if chatlog is not None:
-        # 階段 7–8：結構化標註（chat 流程 demo）。先落地 chatlog 供 chat_highlights 取留言。
-        storage = get_storage()
         storage.put_json(settings.work_bucket, settings.chatlog_key("demo", project_id), chatlog)
-        annotations = annotation_worker.run(repo, storage, settings, project_id)
-        print(
-            f"[pipeline] annotate -> {len(annotations['annotations'])} annotated highlights "
-            f"(5 維度 + beats each)"
-        )
+    annotations = annotation_worker.run(repo, storage, settings, project_id)
+    print(
+        f"[pipeline] annotate -> {len(annotations['annotations'])} annotated highlights "
+        f"(起承轉合 5 維度 + beats each)"
+    )
 
-        if args.refine:
-            # 階段 5–6：AI 精修（Stub Transcribe/Bedrock）——提議笑點 offset + 填台詞。
-            refined = refine_worker.run(repo, storage, settings, project_id)
-            print(
-                f"[pipeline] refine   -> {len(refined['proposed_offsets'])} offset 提議, "
-                f"transcript {refined['transcript_segment_count']} 段, annotations 台詞已填(Stub)"
-            )
+    if args.refine:
+        # 階段 5–6：AI 精修（Stub Transcribe/Bedrock）——提議笑點 offset + 填台詞。
+        refined = refine_worker.run(repo, storage, settings, project_id)
+        print(
+            f"[pipeline] refine   -> {len(refined['proposed_offsets'])} offset 提議, "
+            f"transcript {refined['transcript_segment_count']} 段, annotations 台詞已填(Stub)"
+        )
 
     if args.render:
         storage = get_storage()

@@ -24,8 +24,17 @@ import subprocess
 import tempfile
 from typing import TYPE_CHECKING, Any
 
+from composer.transitions import get_join_strategy
+from creative.effects_registry import EffectContext
+from workers.render.effects_apply import clip_effect_fragments
+from workers.render.subtitle_render import to_ass
+
 if TYPE_CHECKING:
     from workers.render_worker import EncodeInputs
+
+
+def _env_on(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _ffmpeg_bin() -> str:
@@ -75,6 +84,14 @@ class FFmpegEncoder:
         if not clips:
             raise ValueError("timeline has no clips to render")
 
+        # 降卡點：接點微淡（dip），總長不變、與 concat 相容（RENDER_JOIN 選策略，預設 micro_fade）。
+        join = get_join_strategy(os.environ.get("RENDER_JOIN"))
+        fade_s = join.fade_ms / 1000.0
+        # 特效套用（gated；預設關 → 離線/stub/既有測試不受影響）。
+        apply_effects = _env_on("RENDER_APPLY_EFFECTS")
+        effects_list: list[dict[str, Any]] = (inputs.effects or {}).get("effects", []) if apply_effects else []
+        fx_ctx = EffectContext(width=width, height=height, fps=fps)
+
         ff = _ffmpeg_bin()
         vf_norm = (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
@@ -97,19 +114,39 @@ class FFmpegEncoder:
             # `-i`) so a clip late in a long source seeks to a nearby keyframe instead
             # of decoding from 0. Uniform output params let the concat stream-copy.
             seg_paths: list[str] = []
+            n = len(clips)
             for i, clip in enumerate(clips):
                 start = _sec(clip["source_start_ms"])
                 dur = max(0.05, _sec(clip["source_end_ms"]) - start)
                 seg = os.path.join(workdir, f"seg{i:03d}.mp4")
-                _run([
+
+                vf_parts = [vf_norm]
+                af_parts: list[str] = []
+                # 接點微淡（第一刀不淡入、最後一刀不淡出）→ 柔化硬切、總長不變。
+                if fade_s > 0 and n > 1:
+                    out_st = max(0.0, dur - fade_s)
+                    if i > 0:
+                        vf_parts.append(f"fade=t=in:st=0:d={fade_s:.3f}")
+                        af_parts.append(f"afade=t=in:st=0:d={fade_s:.3f}")
+                    if i < n - 1:
+                        vf_parts.append(f"fade=t=out:st={out_st:.3f}:d={fade_s:.3f}")
+                        af_parts.append(f"afade=t=out:st={out_st:.3f}:d={fade_s:.3f}")
+                # 特效片段（gated；歸屬此 clip 的 zoom/flash 等）。
+                if effects_list:
+                    vf_parts.extend(clip_effect_fragments(clip, effects_list, fx_ctx))
+
+                cmd = [
                     ff, "-y", "-ss", f"{start:.3f}", "-i", source_path, "-t", f"{dur:.3f}",
                     "-map", "0:v:0", "-map", "0:a:0?",
-                    "-vf", vf_norm,
+                    "-vf", ",".join(vf_parts),
                     "-c:v", "libx264", "-crf", str(crf), "-preset", "veryfast", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
                     "-video_track_timescale", "90000",
-                    seg,
-                ])
+                ]
+                if af_parts:
+                    cmd += ["-af", ",".join(af_parts)]
+                cmd.append(seg)
+                _run(cmd)
                 seg_paths.append(seg)
 
             # Phase 2: concat the segments + burn subtitles + loudnorm + faststart → final.
@@ -119,9 +156,20 @@ class FFmpegEncoder:
                     fh.write(f"file '{seg.replace(os.sep, '/')}'\n")
             final_path = os.path.join(workdir, "final.mp4")
             subs_escaped = subs_path.replace("\\", "/").replace(":", "\\:")
+            # 燒字幕：預設 styled ASS（字型/顏色/邊框/位置 + keyword 出現動畫），退回 VTT。
+            sub_filter = f"subtitles='{subs_escaped}'"
+            if os.environ.get("SUBTITLE_STYLE_ENGINE", "ass").strip().lower() == "ass" and inputs.subtitle:
+                try:
+                    ass_path = os.path.join(workdir, "subs.ass")
+                    with open(ass_path, "w", encoding="utf-8") as fh:
+                        fh.write(to_ass(inputs.subtitle, width, height))
+                    ass_escaped = ass_path.replace("\\", "/").replace(":", "\\:")
+                    sub_filter = f"ass='{ass_escaped}'"
+                except Exception:  # noqa: BLE001 — ASS 失敗退回 VTT，永不中斷編碼
+                    sub_filter = f"subtitles='{subs_escaped}'"
             final_cmd = [
                 ff, "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
-                "-vf", f"subtitles='{subs_escaped}'",
+                "-vf", sub_filter,
             ]
             if normalize:
                 final_cmd += ["-af", "loudnorm"]

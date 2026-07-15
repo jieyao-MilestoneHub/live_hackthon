@@ -3,36 +3,80 @@
   "language": "zh-TW",
   "project_id": "project-123",
   "render_id": "render-456",
-  "style": { "font": "Noto Sans TC", "size": 48, "position": "bottom" },
+  "style": {
+    "caption": {
+      "font_family": "Noto Sans TC",
+      "font_size": 48,
+      "bold": true,
+      "primary_color": "#FFFFFF",
+      "outline_color": "#000000",
+      "outline_width": 3,
+      "shadow": 1,
+      "alignment": 2,
+      "margin_v": 96
+    },
+    "keyword": {
+      "font_family": "Noto Sans TC",
+      "font_size": 96,
+      "bold": true,
+      "primary_color": "#FFE23D",
+      "outline_color": "#111111",
+      "outline_width": 5,
+      "shadow": 2,
+      "alignment": 8,
+      "margin_v": 220
+    }
+  },
   "cues": [
     {
       "start_ms": 0,
       "end_ms": 3000,
       "text": "欸欸欸來了來了！就是現在！",
+      "kind": "caption",
       "emphasis_words": ["來了", "現在"]
     },
     {
       "start_ms": 3000,
       "end_ms": 8000,
       "text": "大家快看，這個超級厲害！",
+      "kind": "caption",
       "emphasis_words": ["超級厲害"]
     },
     {
       "start_ms": 8000,
       "end_ms": 15000,
       "text": "成功了！我們做到了！",
+      "kind": "caption",
       "emphasis_words": ["成功了", "做到了"]
+    },
+    {
+      "start_ms": 11500,
+      "end_ms": 15000,
+      "text": "成功了！",
+      "kind": "keyword",
+      "emphasis_words": ["成功了"],
+      "animation": { "type": "pop", "duration_ms": 260 }
     },
     {
       "start_ms": 15000,
       "end_ms": 22000,
       "text": "哇這個真的太扯了！這波操作也太神了吧！",
+      "kind": "caption",
       "emphasis_words": ["太扯了", "太神了"]
+    },
+    {
+      "start_ms": 18000,
+      "end_ms": 21500,
+      "text": "太神了",
+      "kind": "keyword",
+      "emphasis_words": ["太神了"],
+      "animation": { "type": "pop", "duration_ms": 260 }
     },
     {
       "start_ms": 22000,
       "end_ms": 29800,
       "text": "這絕對是今天最精彩的一段！",
+      "kind": "caption",
       "emphasis_words": ["最精彩"]
     }
   ]
