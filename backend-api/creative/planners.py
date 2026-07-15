@@ -72,6 +72,10 @@ class AgentPlanner:
 
     TODO(agent worktree): 以 Bedrock agent 產 subtitle/effects 計畫取代本體，並於該 worktree
     的模組 import 時 ``register_planner("agent", RealAgentPlanner())`` 覆寫此佔位。
+
+    注意：實際啟用「agent 路線自動產出」需**兩件事同時成立**——(1) 上述 register_planner 注入真
+    agent、(2) 部署設 ``DUAL_TRACK=on``（見 ``workers.lambda_handlers._dual_track_routes``，預設
+    off）。在此之前 main 只跑 pipeline，本佔位不會被自動觸發產出誤導性成品。
     """
 
     route = "agent"

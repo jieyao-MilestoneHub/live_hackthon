@@ -38,8 +38,14 @@ from workers import analysis_worker, chat_analysis_worker, composer_worker, crea
 
 
 def _dual_track_routes() -> tuple[str, ...]:
-    """雙軌分流 routes：DUAL_TRACK 預設 on（pipeline+agent）；關則只跑 pipeline。"""
-    if os.environ.get("DUAL_TRACK", "on").strip().lower() in {"0", "false", "off", "no"}:
+    """雙軌分流 routes：DUAL_TRACK **預設 off**（只跑 pipeline）；顯式設 on 才加 agent 路線。
+
+    預設 off 的理由：``AgentPlanner`` 目前是 fail-open 佔位（委派 pipeline），預設開會讓部署後
+    自動吐出一份「看似 agent、實為 pipeline 換種子」的誤導性成品。待 agent worktree 以
+    ``register_planner("agent", RealAgentPlanner())`` 注入真正的 agent 後，於其 infra 設
+    ``DUAL_TRACK=on`` 即啟用；planner-registry seam 本檔不需再改。
+    """
+    if os.environ.get("DUAL_TRACK", "off").strip().lower() in {"0", "false", "off", "no"}:
         return ("pipeline",)
     return DUAL_TRACK_ROUTES
 

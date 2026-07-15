@@ -38,6 +38,24 @@ def test_advance_project_if_allowed_advances_and_noops() -> None:
     assert r._s == ProjectState.RENDER_REQUESTED.value
 
 
+# --- dual-track routing flag (boundary) ---------------------------------------
+
+def test_dual_track_routes_defaults_to_pipeline_only(monkeypatch) -> None:
+    """預設（DUAL_TRACK 未設）只跑 pipeline —— 不自動吐佔位 agent 成品。"""
+    from workers.lambda_handlers import _dual_track_routes
+
+    monkeypatch.delenv("DUAL_TRACK", raising=False)
+    assert _dual_track_routes() == ("pipeline",)
+
+
+def test_dual_track_routes_opt_in_yields_both(monkeypatch) -> None:
+    """顯式 DUAL_TRACK=on 才啟用雙軌（agent worktree 部署時的開關）。"""
+    from workers.lambda_handlers import _dual_track_routes
+
+    monkeypatch.setenv("DUAL_TRACK", "on")
+    assert _dual_track_routes() == ("pipeline", "agent")
+
+
 # --- planner registry ---------------------------------------------------------
 
 def test_agent_planner_produces_valid_plans() -> None:
