@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -96,8 +97,31 @@ app.add_middleware(
 )
 
 
-def _new_project_id() -> str:
-    return f"project-{uuid.uuid4().hex[:12]}"
+# Traceable project ids: embed a Taipei-time (UTC+8, no DST → fixed offset,
+# no tzdata dependency) timestamp and an ASCII slug of the title so that
+# listing S3 (every key nests project={project_id}) reveals which recording an
+# object belongs to and sorts chronologically. Non-ASCII (Chinese) titles slug
+# to empty and fall back to timestamp-only. The id stays within [a-z0-9-] so it
+# is safe as a Transcribe job name / Rekognition collection id
+# (lang-live-{project_id}, both restricted to [A-Za-z0-9._-]) and needs no
+# URL-encoding in the EventBridge S3-event key parsed by _SOURCE_KEY_RE.
+_TAIPEI_TZ = timezone(timedelta(hours=8))
+_SLUG_RE = re.compile(r"[a-z0-9]+")
+
+
+def _slugify_title(title: str | None, max_len: int = 32) -> str:
+    """Compress a title to an ASCII slug; non-ASCII chars are dropped, so a
+    Chinese-only title yields an empty string (caller omits the segment)."""
+    if not title:
+        return ""
+    return "-".join(_SLUG_RE.findall(title.lower()))[:max_len].strip("-")
+
+
+def _new_project_id(title: str | None = None) -> str:
+    ts = datetime.now(_TAIPEI_TZ).strftime("%Y%m%d-%H%M%S")
+    slug = _slugify_title(title)
+    suffix = uuid.uuid4().hex[:8]
+    return f"project-{ts}-{slug}-{suffix}" if slug else f"project-{ts}-{suffix}"
 
 
 # Accepted video containers for the batch upload path. Enforced in
@@ -155,7 +179,7 @@ def create_project(
     repo: ProjectRepository = Depends(get_repository),
 ) -> ProjectCreated:
     settings = get_settings()
-    project_id = _new_project_id()
+    project_id = _new_project_id(body.title)
     source_key = settings.source_key(principal.tenant_id, project_id)
 
     item = {
