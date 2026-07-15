@@ -1,4 +1,4 @@
-// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.7.0).
+// TypeScript types mirroring contracts/openapi.yaml (浪 LIVE Editor API v0.8.0).
 // Project / millisecond model (M1). Source of truth: ../contracts/openapi.yaml
 // and ../contracts/*.v1.schema.json — keep in sync when the contract changes.
 // All times are integers in milliseconds (ms). Core entity is Project (not job).

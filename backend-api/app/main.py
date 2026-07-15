@@ -702,22 +702,61 @@ def list_artifacts(
     return [Artifact(**a) for a in repo.list_artifacts(id)]
 
 
+def _resolve_gated_artifact(artifact_id: str, repo: ProjectRepository) -> dict:
+    """Fetch an artifact and re-enforce the owning project's moderation gate.
+
+    Shared by the download and preview routes so the 404 (missing) / 403
+    (moderation) checks stay in exactly one place. Defense in depth: an artifact
+    may have been rendered before a later block / takedown, so we re-check the
+    verdict at sign time, not just at render time."""
+    artifact = repo.get_artifact_by_id(artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="artifact not found")
+    owner = repo.get_project(artifact.get("project_id")) if artifact.get("project_id") else None
+    if owner is not None:
+        _assert_publishable(owner)
+    return artifact
+
+
 @app.get("/artifacts/{artifact_id}/download", response_model=DownloadUrl)
 def get_artifact_download_url(
     artifact_id: str,
     repo: ProjectRepository = Depends(get_repository),
     storage: Storage = Depends(get_storage),
 ) -> DownloadUrl:
-    artifact = repo.get_artifact_by_id(artifact_id)
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="artifact not found")
-    # Defense in depth: an artifact may have been rendered before a later block /
-    # takedown — re-check the owning project's moderation verdict before signing.
-    owner = repo.get_project(artifact.get("project_id")) if artifact.get("project_id") else None
-    if owner is not None:
-        _assert_publishable(owner)
+    artifact = _resolve_gated_artifact(artifact_id, repo)
     settings = get_settings()
-    url = storage.presigned_get(settings.output_bucket, artifact["video_key"])
+    # attachment disposition → the browser saves the file to disk (vs. playing it
+    # inline). Filename identifies the project + creative route for the user.
+    route = artifact.get("route") or "pipeline"
+    filename = f"{artifact.get('project_id', 'artifact')}-{route}.mp4"
+    url = storage.presigned_get(
+        settings.output_bucket,
+        artifact["video_key"],
+        disposition="attachment",
+        filename=filename,
+    )
+    return DownloadUrl(url=url, expires_in_sec=settings.presign_expiry_sec)
+
+
+@app.get("/artifacts/{artifact_id}/preview", response_model=DownloadUrl)
+def get_artifact_preview_url(
+    artifact_id: str,
+    repo: ProjectRepository = Depends(get_repository),
+    storage: Storage = Depends(get_storage),
+) -> DownloadUrl:
+    """Signed inline URL for the finished MP4, for in-page ``<video>`` preview
+    before download. Same object + moderation gate as the download route, but
+    ``inline`` disposition + ``video/mp4`` so the browser streams (Range) it in
+    place instead of forcing a save."""
+    artifact = _resolve_gated_artifact(artifact_id, repo)
+    settings = get_settings()
+    url = storage.presigned_get(
+        settings.output_bucket,
+        artifact["video_key"],
+        disposition="inline",
+        content_type="video/mp4",
+    )
     return DownloadUrl(url=url, expires_in_sec=settings.presign_expiry_sec)
 
 

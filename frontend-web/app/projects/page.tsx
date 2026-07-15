@@ -11,6 +11,7 @@ import {
   createUploadSession,
   getDownloadUrl,
   getHighlights,
+  getPreviewUrl,
   getProject,
   getRender,
   getTimeline,
@@ -299,6 +300,11 @@ function EditorRegions({
   const [downloading, setDownloading] = useState<string | null>(null);
   const [downloadErr, setDownloadErr] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  // In-page 成品預覽（下載前先看成果）：選定的 artifact + 其 inline 串流 URL。
+  const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewErr, setPreviewErr] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   function toggle(set: Set<string>, id: string): Set<string> {
     const next = new Set(set);
@@ -409,12 +415,69 @@ function EditorRegions({
     };
   }, [renderDone, project.project_id, render?.status]);
 
+  // Default the preview to the first artifact once they load; keep the current
+  // pick if it's still present (avoids resetting the route on a re-fetch).
+  useEffect(() => {
+    if (artifacts.length === 0) return;
+    setPreviewArtifactId((cur) =>
+      cur && artifacts.some((a) => a.artifact_id === cur) ? cur : artifacts[0].artifact_id,
+    );
+  }, [artifacts]);
+
+  // Fetch an inline (streamable) signed URL for the selected artifact. Same
+  // moderation gate as download → mirror its 403/401 error mapping.
+  useEffect(() => {
+    if (!previewArtifactId || publishGated) {
+      setPreviewUrl(null);
+      setPreviewErr(null);
+      setPreviewLoading(false);
+      return;
+    }
+    let active = true;
+    // Clear the previous artifact's video on a route switch so the loading
+    // indicator shows instead of the stale clip until the new URL resolves.
+    setPreviewUrl(null);
+    setPreviewLoading(true);
+    setPreviewErr(null);
+    getPreviewUrl(previewArtifactId)
+      .then(({ url }) => {
+        if (active) setPreviewUrl(url);
+      })
+      .catch((err) => {
+        if (!active) return;
+        console.error(err);
+        const status = err instanceof ApiError ? err.status : 0;
+        setPreviewUrl(null);
+        setPreviewErr(
+          status === 403
+            ? '內容審核未通過，需管理員複核放行後才能預覽。'
+            : status === 401
+              ? '登入已過期，請重新登入後再試。'
+              : '取得預覽連結失敗，請重試。',
+        );
+      })
+      .finally(() => {
+        if (active) setPreviewLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [previewArtifactId, publishGated]);
+
   async function handleDownload(artifactId: string) {
     setDownloadErr(null);
     setDownloading(artifactId);
     try {
       const { url } = await getDownloadUrl(artifactId);
-      window.open(url, '_blank', 'noopener,noreferrer');
+      // The signed URL carries Content-Disposition: attachment, so an anchor
+      // click saves the file in place (no popup, no new tab that just plays it).
+      // Must be connected to the DOM for a programmatic click to fire in Firefox.
+      const a = document.createElement('a');
+      a.href = url;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     } catch (err) {
       console.error(err);
       const status = err instanceof ApiError ? err.status : 0;
@@ -431,6 +494,15 @@ function EditorRegions({
   }
 
   const total = actualMs || 1;
+  // While previewing, letterbox the frame to the rendered artifact's real aspect;
+  // otherwise follow the pre-render aspect segmented control.
+  const previewArtifact = artifacts.find((a) => a.artifact_id === previewArtifactId) ?? null;
+  const activeAspect: AspectRatio =
+    previewUrl &&
+    previewArtifact?.aspect_ratio &&
+    ASPECTS.includes(previewArtifact.aspect_ratio as AspectRatio)
+      ? (previewArtifact.aspect_ratio as AspectRatio)
+      : aspect;
 
   return (
     <div className="editor">
@@ -450,12 +522,47 @@ function EditorRegions({
             ))}
           </div>
         </div>
+        {/* 雙軌分流：成品就緒後切換 pipeline / agent 版預覽。 */}
+        {renderDone && artifacts.length > 1 && (
+          <div className="seg" style={{ marginBottom: 10 }}>
+            {[...artifacts]
+              .sort((a, b) => (a.route ?? '').localeCompare(b.route ?? ''))
+              .map((a) => (
+                <button
+                  key={a.artifact_id}
+                  className={`seg__btn${previewArtifactId === a.artifact_id ? ' is-active' : ''}`}
+                  onClick={() => setPreviewArtifactId(a.artifact_id)}
+                >
+                  {ROUTE_LABEL[a.route ?? 'pipeline']}
+                </button>
+              ))}
+          </div>
+        )}
         <div className="preview">
           <div
             className="preview__frame"
-            style={{ aspectRatio: ASPECT_CSS[aspect], height: 'var(--preview-h)' }}
+            style={{ aspectRatio: ASPECT_CSS[activeAspect], height: 'var(--preview-h)' }}
           >
-            <span className="preview__note">PREVIEW · {aspect}</span>
+            {renderDone && publishGated ? (
+              <span className="preview__note">內容審核未通過，無法預覽</span>
+            ) : renderDone && previewUrl ? (
+              <video
+                key={previewUrl}
+                className="preview__video"
+                src={previewUrl}
+                controls
+                playsInline
+                preload="metadata"
+              />
+            ) : renderDone && previewLoading ? (
+              <span className="preview__note">載入預覽…</span>
+            ) : renderDone && previewErr ? (
+              <span className="preview__note">{previewErr}</span>
+            ) : (
+              <span className="preview__note">
+                {renderDone ? `PREVIEW · ${activeAspect}` : '成品渲染完成後可於此預覽'}
+              </span>
+            )}
           </div>
         </div>
         <p className="hint">
