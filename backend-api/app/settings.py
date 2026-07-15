@@ -31,6 +31,12 @@ class Settings:
     output_bucket: str
     use_inmemory: bool
     presign_expiry_sec: int
+    # Defaulted so tests/helpers that construct Settings() directly keep working.
+    max_upload_bytes: int = 10 * 1024**3
+    max_batch_files: int = 20
+    # Content moderation feature flag. When False the publish gates are skipped
+    # (pre-moderation projects / disabled deployments are never blocked).
+    moderation_enabled: bool = True
 
     def source_key(self, tenant_id: str, project_id: str, filename: str = "source.mp4") -> str:
         """Raw-bucket object key per demand.md §十六."""
@@ -54,9 +60,9 @@ class Settings:
         """Work-bucket key for the structured annotations.v1 (5 維度標註 + 敘事節拍)."""
         return f"{self._project_prefix(tenant_id, project_id)}/annotations/annotations.json"
 
-    def transcript_key(self, tenant_id: str, project_id: str) -> str:
-        """Work-bucket key for the normalized transcript.v1 (AI 精修產生，供稽核/重用)."""
-        return f"{self._project_prefix(tenant_id, project_id)}/transcript/transcript.v1.json"
+    def moderation_key(self, tenant_id: str, project_id: str) -> str:
+        """Work-bucket key for the moderation.v1 result doc (findings detail)."""
+        return f"{self._project_prefix(tenant_id, project_id)}/moderation/moderation.json"
 
     def timeline_key(self, tenant_id: str, project_id: str, version: int) -> str:
         """Work-bucket key for a timeline version (§十六)."""
@@ -86,5 +92,12 @@ def get_settings() -> Settings:
         # Default to in-memory so local uvicorn + pytest work with no AWS creds.
         # Set USE_INMEMORY=0 to hit real DynamoDB/S3 (or moto in tests).
         use_inmemory=_env_bool("USE_INMEMORY", default=True),
-        presign_expiry_sec=int(os.environ.get("PRESIGN_EXPIRY_SEC", "900")),
+        # 6h default: a 10GB upload at ~15Mbps takes 90+ min, so the old 900s
+        # (15 min) guaranteed mid-flight expiry. Bounded by the Lambda role's
+        # temp-credential lifetime, so 6h is a practical ceiling. See batch-upload plan.
+        presign_expiry_sec=int(os.environ.get("PRESIGN_EXPIRY_SEC", "21600")),
+        # Per-file upload cap (default 10GB) and per-batch file-count cap (default 20).
+        max_upload_bytes=int(os.environ.get("MAX_UPLOAD_BYTES", str(10 * 1024**3))),
+        max_batch_files=int(os.environ.get("MAX_BATCH_FILES", "20")),
+        moderation_enabled=_env_bool("MODERATION_ENABLED", default=True),
     )

@@ -99,6 +99,9 @@ def ready_project(client):
         repo.update_project(project_id, {"status": state.value})
     analysis_worker.run(repo, project_id, load_sample("transcript.sample.json"))
     composer_worker.run(repo, project_id)
+    # A fully-analyzed project has passed the moderation gate (mirrors the
+    # pipeline setting ALLOWED), so render/download gates permit publishing.
+    repo.update_project(project_id, {"moderation_status": "ALLOWED"})
     return project_id
 
 

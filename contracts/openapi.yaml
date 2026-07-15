@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: 浪 LIVE Editor API
-  version: 0.5.0
+  version: 0.7.0
   description: >
     影片高光剪輯「編輯器控制面」API（前後端共用契約）。M1 Project/毫秒版：
     核心實體為 Project、時間一律毫秒（ms）、雙 pipeline（分析組片 + 渲染）。
@@ -50,6 +50,8 @@ paths:
       description: >
         回傳 multipart upload_id 與各 part 的 presigned URL；瀏覽器直接對 S3 Raw
         bucket 上傳（不經過 API）。狀態 CREATED → UPLOAD_PENDING。
+        0.5.0：批次上傳統一走此路徑（單檔=批次1），前端只送 size_bytes、由伺服器推算
+        分段數；伺服器強制單檔上限（預設 10GB，超過回 413）與影片型別（非 video 回 415）。
       operationId: createUploadSession
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
@@ -65,6 +67,8 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/UploadSession" }
         "404": { description: project 不存在 }
+        "413": { description: 檔案超過單檔上限（預設 10GB） }
+        "415": { description: 非支援的影片型別（content_type 非 video/* 且副檔名不在允許清單） }
 
   /projects/{id}/upload-session/complete:
     post:
@@ -405,8 +409,47 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DownloadUrl" }
+        "403": { description: 內容審核封鎖，不可下載 }
         "404": { description: 不存在 }
         "501": { description: 尚未實作（M4） }
+
+  /projects/{id}/moderation:
+    get:
+      summary: 查詢專案的內容審核裁決 + 稽核歷程（0.6.0）
+      operationId: getModeration
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModerationView" }
+        "404": { description: project 不存在 }
+
+  /projects/{id}/moderation/override:
+    post:
+      summary: 管理員複核／推翻審核裁決（需 moderator 角色）；留下不可變稽核紀錄
+      operationId: overrideModeration
+      description: >
+        moderator/admin 對 FLAGGED/BLOCKED 專案做人工裁決。decision=ALLOW → 狀態轉
+        OVERRIDDEN（可發布）；decision=BLOCK → 狀態轉 BLOCKED。每次都追加一筆
+        moderation.v1（action=OVERRIDE, decided_by）稽核紀錄。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModerationOverride" }
+      responses:
+        "200":
+          description: 已更新裁決
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModerationView" }
+        "403": { description: 需要 moderator 角色 }
+        "404": { description: project 不存在 }
 
 components:
   securitySchemes:
@@ -432,6 +475,62 @@ components:
         - RENDERING
         - ARTIFACT_READY
         - FAILED
+
+    ModerationStatus:
+      type: string
+      description: >
+        內容審核裁決（0.6.0）；與 ProjectState 正交。PENDING 未掃描 / ALLOWED 通過 /
+        FLAGGED 需人工複核才可發布 / BLOCKED 硬擋分析·算圖·下載 / OVERRIDDEN 管理員放行。
+      enum: [PENDING, ALLOWED, FLAGGED, BLOCKED, OVERRIDDEN]
+
+    ModerationView:
+      type: object
+      description: GET /projects/{id}/moderation 回應：目前裁決 + 最新結果 + 稽核歷程。
+      required: [project_id, status, events]
+      properties:
+        project_id: { type: string }
+        status: { $ref: "#/components/schemas/ModerationStatus" }
+        latest:
+          description: 最新一筆 moderation.v1 結果（可能為 null，若尚未掃描）
+          allOf: [{ $ref: "#/components/schemas/Moderation" }]
+        events:
+          type: array
+          description: 不可變稽核歷程（SCAN / REVIEW / OVERRIDE），時間遞增
+          items: { $ref: "#/components/schemas/Moderation" }
+
+    ModerationOverride:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [ALLOW, BLOCK]
+          description: ALLOW→OVERRIDDEN（可發布）；BLOCK→BLOCKED
+        note: { type: string, description: 裁決理由（合規留痕） }
+
+    Moderation:
+      type: object
+      description: moderation.v1 稽核紀錄（mirror contracts/moderation.v1.schema.json）。
+      required: [schema_version, moderation_id, project_id, status, action, decided_by, decided_at]
+      properties:
+        schema_version: { type: string, enum: ["moderation.v1"] }
+        moderation_id: { type: string }
+        project_id: { type: string }
+        status: { $ref: "#/components/schemas/ModerationStatus" }
+        action:
+          type: string
+          enum: [SCAN, REVIEW, OVERRIDE]
+        decided_by: { type: string }
+        decided_at: { type: string, format: date-time }
+        note: { type: string }
+        policy_version: { type: string }
+        visual:
+          type: object
+          description: Rekognition 視覺審核結果
+        text:
+          type: object
+          description: Bedrock zh-TW 文字審核結果
+        created_at: { type: string, format: date-time }
 
     RenderState:
       type: string
@@ -497,6 +596,9 @@ components:
         latest_timeline_version: { type: integer }
         latest_render_id: { type: string }
         latest_artifact_id: { type: string }
+        moderation_status:
+          $ref: "#/components/schemas/ModerationStatus"
+          description: 內容審核裁決（與生命週期正交；0.6.0 新增）
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         error_code: { type: string }
@@ -504,16 +606,23 @@ components:
 
     UploadSessionCreate:
       type: object
-      required: [filename]
+      required: [filename, size_bytes]
       properties:
         filename: { type: string, example: source.mp4 }
         content_type: { type: string, example: video/mp4 }
+        size_bytes:
+          type: integer
+          minimum: 0
+          description: >
+            檔案大小（bytes）。0.5.0 起為主要輸入：伺服器據此推算 multipart 分段數，
+            並強制單檔上限（預設 10GB，超過回 413）。
         part_count:
           type: integer
           minimum: 1
-          default: 1
-          description: multipart 分段數（前端依檔案大小決定）；與 size_bytes 擇一提供
-        size_bytes: { type: integer, minimum: 0, description: 檔案大小（bytes），供伺服器推算分段數 }
+          deprecated: true
+          description: >
+            （已棄用）multipart 分段數。保留以相容舊客戶端；一旦提供會覆蓋 size_bytes
+            的推算。批次上傳請改送 size_bytes。
 
     UploadSession:
       type: object
@@ -525,7 +634,7 @@ components:
         parts:
           type: array
           items: { $ref: "#/components/schemas/UploadPart" }
-        expires_in_sec: { type: integer, example: 900 }
+        expires_in_sec: { type: integer, example: 21600 }
 
     UploadPart:
       type: object

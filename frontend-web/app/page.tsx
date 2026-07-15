@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createProject } from '@/lib/api';
 import HighlightWave from '@/components/HighlightWave';
+import BatchUploader from '@/components/BatchUploader';
 
 const MAX_TARGET_SEC = 60;
 const DEFAULT_TARGET_SEC = 30;
@@ -28,6 +29,9 @@ export default function LandingPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Transcribe uses the inline BatchUploader; only the chat flow creates a
+    // single project here and routes to the paired video+CSV upload screen.
+    if (analysisSource !== 'chat') return;
     if (targetSec < 1 || targetSec > MAX_TARGET_SEC) {
       setError(`目標秒數需介於 1–${MAX_TARGET_SEC} 秒。`);
       return;
@@ -120,7 +124,7 @@ export default function LandingPage() {
               <p className="hint">
                 {analysisSource === 'chat'
                   ? '需同時上傳影片與聊天室 LOG CSV；高光取自彈幕熱度峰值。'
-                  : '上傳影片後自動轉逐字稿，偵測語音情緒高峰。'}
+                  : '上傳影片後自動轉逐字稿，偵測語音情緒高峰。可一次批次上傳多支影片。'}
               </p>
             </div>
 
@@ -151,10 +155,21 @@ export default function LandingPage() {
               </p>
             </div>
 
-            <button type="submit" className="btn btn--lg btn--block" disabled={submitting}>
-              {submitting ? '建立中…' : '建立並開始上傳 ▸'}
-            </button>
-            {error && <p className="error">{error}</p>}
+            {analysisSource === 'chat' ? (
+              <>
+                <button type="submit" className="btn btn--lg btn--block" disabled={submitting}>
+                  {submitting ? '建立中…' : '建立並前往上傳 ▸'}
+                </button>
+                {error && <p className="error">{error}</p>}
+              </>
+            ) : (
+              <BatchUploader
+                targetDurationMs={Math.round(
+                  Math.min(MAX_TARGET_SEC, Math.max(1, targetSec)) * 1000,
+                )}
+                titlePrefix={title.trim() || undefined}
+              />
+            )}
           </form>
         </div>
 
