@@ -8,21 +8,23 @@
 # S3 / DynamoDB (SFN payload limit is 256 KB).
 
 locals {
-  # Per-worker sizing. transcribe/poll_transcription are now NON-blocking (start
-  # the job, then Step Functions Waits + polls), so neither needs the old 15-min
-  # timeout or a held concurrency slot.
+  # Per-worker sizing (timeout s, memory MB, ephemeral /tmp MB).
+  # poll_transcription is NON-blocking (start the job, then Step Functions Waits
+  # + polls). transcribe is heavier: for sources over Amazon Transcribe's 2GB
+  # limit it stream-copies the S3 source into ≤1.8GB segments via ffmpeg before
+  # firing per-segment jobs, so it needs a big /tmp + a long timeout.
   workers = {
-    validate_source     = { timeout = 60, memory = 256 }
-    probe_metadata      = { timeout = 60, memory = 256 }
-    start_moderation    = { timeout = 60, memory = 256 }
-    transcribe          = { timeout = 60, memory = 512 }
-    poll_transcription  = { timeout = 60, memory = 512 }
-    detect_highlights   = { timeout = 300, memory = 512 }
-    moderation_decision = { timeout = 120, memory = 512 }
-    compose_timeline    = { timeout = 120, memory = 512 }
-    mark_ready          = { timeout = 30, memory = 256 }
-    mark_blocked        = { timeout = 30, memory = 256 }
-    mark_failed         = { timeout = 30, memory = 256 }
+    validate_source     = { timeout = 60, memory = 256, ephemeral = 512 }
+    probe_metadata      = { timeout = 60, memory = 256, ephemeral = 512 }
+    start_moderation    = { timeout = 60, memory = 256, ephemeral = 512 }
+    transcribe          = { timeout = 900, memory = 2048, ephemeral = 10240 }
+    poll_transcription  = { timeout = 60, memory = 512, ephemeral = 512 }
+    detect_highlights   = { timeout = 300, memory = 512, ephemeral = 512 }
+    moderation_decision = { timeout = 120, memory = 512, ephemeral = 512 }
+    compose_timeline    = { timeout = 120, memory = 512, ephemeral = 512 }
+    mark_ready          = { timeout = 30, memory = 256, ephemeral = 512 }
+    mark_blocked        = { timeout = 30, memory = 256, ephemeral = 512 }
+    mark_failed         = { timeout = 30, memory = 256, ephemeral = 512 }
   }
 
   worker_env = {
@@ -122,6 +124,10 @@ resource "aws_lambda_function" "worker" {
   memory_size   = each.value.memory
   timeout       = each.value.timeout
   architectures = ["x86_64"]
+
+  ephemeral_storage {
+    size = each.value.ephemeral
+  }
 
   # -1 = unreserved (default). Async transcribe means workers no longer block, so
   # peak concurrency is low; this lever exists only if a low-cap account needs the
