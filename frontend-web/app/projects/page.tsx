@@ -469,12 +469,16 @@ function EditorRegions({
     setDownloading(artifactId);
     try {
       const { url } = await getDownloadUrl(artifactId);
+      // Defense in depth: the backend always returns a signed https S3 URL —
+      // refuse anything else before handing it to the DOM.
+      if (!/^https:\/\//i.test(url)) throw new Error('unexpected download URL scheme');
       // The signed URL carries Content-Disposition: attachment, so an anchor
       // click saves the file in place (no popup, no new tab that just plays it).
       // Must be connected to the DOM for a programmatic click to fire in Firefox.
+      // noreferrer: don't leak the SigV4-signed query string via the Referer header.
       const a = document.createElement('a');
       a.href = url;
-      a.rel = 'noopener';
+      a.rel = 'noopener noreferrer';
       document.body.appendChild(a);
       a.click();
       a.remove();
