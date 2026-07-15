@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
+  ApiError,
   analyzeProject,
   composeTimeline,
   createChatUpload,
@@ -447,7 +448,14 @@ function EditorRegions({
       window.open(url, '_blank', 'noopener,noreferrer');
     } catch (err) {
       console.error(err);
-      setDownloadErr('取得下載連結失敗，請重試。');
+      const status = err instanceof ApiError ? err.status : 0;
+      setDownloadErr(
+        status === 403
+          ? '內容審核未通過，需管理員複核放行後才能下載。'
+          : status === 401
+            ? '登入已過期，請重新登入後再試。'
+            : '取得下載連結失敗，請重試。',
+      );
     } finally {
       setDownloading(null);
     }
