@@ -20,10 +20,11 @@ FROM public.ecr.aws/lambda/python:3.11
 COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
 
 # CJK 字型：libass 燒 zh-TW 字幕/爆點字需要，否則中文變豆腐。
-# AL2023 套件名；若不存在，改用 dnf search 找 noto CJK 套件或 curl 下載字型檔。
-RUN dnf install -y google-noto-sans-cjk-fonts fontconfig \
+# public.ecr.aws/lambda/python:3.11 base = Amazon Linux 2 (yum, not dnf); the
+# google-noto-sans-cjk-fonts package IS in amzn2-core.
+RUN yum install -y google-noto-sans-cjk-fonts fontconfig \
     && fc-cache -f \
-    && dnf clean all
+    && yum clean all
 
 # 依賴 + 程式（COPY 進 Lambda task root）。
 COPY backend-api/requirements.txt ${LAMBDA_TASK_ROOT}/requirements.txt
