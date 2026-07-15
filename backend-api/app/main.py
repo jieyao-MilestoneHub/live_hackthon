@@ -40,6 +40,8 @@ from app.schemas import (
     ModerationEvent,
     ModerationOverrideRequest,
     ModerationView,
+    ProgressEvent,
+    ProgressView,
     Project,
     ProjectCreate,
     ProjectCreated,
@@ -162,6 +164,15 @@ def _moderation_view(project: dict, repo: ProjectRepository) -> ModerationView:
     return ModerationView(
         project_id=project["project_id"],
         status=status,
+        latest=events[-1] if events else None,
+        events=events,
+    )
+
+
+def _progress_view(project: dict, repo: ProjectRepository) -> ProgressView:
+    events = [ProgressEvent(**e) for e in repo.list_progress_events(project["project_id"])]
+    return ProgressView(
+        project_id=project["project_id"],
         latest=events[-1] if events else None,
         events=events,
     )
@@ -755,6 +766,18 @@ def get_moderation(
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
     return _moderation_view(project, repo)
+
+
+@app.get("/projects/{id}/progress", response_model=ProgressView)
+def get_progress(
+    id: str,
+    repo: ProjectRepository = Depends(get_repository),
+) -> ProgressView:
+    """AI 統整的即時進度旁白 feed（oldest→newest）+ 最新一則。前端輪詢此端點展示流程。"""
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return _progress_view(project, repo)
 
 
 @app.post("/projects/{id}/moderation/override", response_model=ModerationView)

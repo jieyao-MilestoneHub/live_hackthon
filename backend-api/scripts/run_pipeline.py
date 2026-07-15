@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from analysis.chatlog import clean_chatlog  # noqa: E402
 from analysis.validate import load_sample  # noqa: E402
 from app.main import _new_project_id  # noqa: E402
+from app.progress import StepKey, get_progress_reporter  # noqa: E402
 from app.repository import get_repository  # noqa: E402
 from app.settings import get_settings  # noqa: E402
 from app.state import ProjectState, assert_project_transition  # noqa: E402
@@ -137,11 +138,23 @@ def main() -> int:
         highlights = analysis_worker.run(repo, project_id, transcript)
         print(f"[pipeline] analysis -> {len(highlights['highlights'])} highlights, status -> COMPOSING")
 
+    # 進度旁白（本機示範完整 feed；部署時同語意事件由 lambda_handlers 埋點）。
+    reporter = get_progress_reporter()
+    reporter.step(
+        project_id, StepKey.DETECTING_HIGHLIGHTS, phase="COMPOSING",
+        facts={"inputs": ["聊天室反應"] if chatlog is not None else ["逐字稿", "聊天室反應"],
+               "signals": ["情緒轉折", "聊天室熱度"], "found": len(highlights["highlights"])},
+    )
+
     timeline = composer_worker.run(repo, project_id)
     print(
         f"[pipeline] compose  -> timeline v{timeline['version']}, "
         f"{len(timeline['clips'])} clips, actual={timeline['actual_duration_ms']}ms "
         f"(target={timeline['target_duration_ms']}ms), status -> READY_TO_EDIT"
+    )
+    reporter.step(
+        project_id, StepKey.COMPOSING, phase="COMPOSING",
+        facts={"beats": "起承轉合", "clips": len(timeline["clips"]), "analysis": "編排初剪時間軸"},
     )
 
     # 階段 7–8：結構化標註（起承轉合 5 維度 + beats）。兩條流程皆產出；chat 流程先落地

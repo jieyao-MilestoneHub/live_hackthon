@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from app.progress import report_render_stage
 from app.repository import ProjectRepository
 from app.settings import get_settings
 from app.state import (
@@ -141,7 +142,9 @@ def _advance(
     patch = {"status": target.value, "current_stage": stage}
     if extra:
         patch.update(extra)
-    return repo.update_render(project_id, render_id, patch)
+    updated = repo.update_render(project_id, render_id, patch)
+    report_render_stage(project_id, target.value)  # narrate this render sub-step (best-effort)
+    return updated
 
 
 def run(
