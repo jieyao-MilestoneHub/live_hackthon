@@ -7,8 +7,13 @@
 # (e.g. async re-compose); no consumer is wired yet (the control plane runs the
 # pure Composer inline for now).
 
+data "aws_region" "current" {}
+
 locals {
   raw_bucket_arn = "arn:aws:s3:::${var.raw_bucket}"
+  # Text-moderation model chat_starter invokes via Bedrock Converse. Matches
+  # analysis-workflow bedrock_review_model_id / app nova_review_model_id.
+  bedrock_moderation_model_arn = "arn:aws:bedrock:${data.aws_region.current.name}::foundation-model/amazon.nova-micro-v1:0"
 }
 
 # --- SQS: analysis-intake (+DLQ) -------------------------------------------
@@ -297,6 +302,14 @@ data "aws_iam_policy_document" "chat_starter" {
       "dynamodb:Query", "dynamodb:BatchWriteItem",
     ]
     resources = [var.table_arn, "${var.table_arn}/index/*"]
+  }
+  # chat_starter runs content moderation's text scan via Bedrock Converse. Without
+  # this the Converse call gets AccessDeniedException and moderation fail-safes to
+  # FLAGGED ("text scan unavailable"). Mirrors analysis-workflow's BedrockInvoke.
+  statement {
+    sid       = "BedrockModerationInvoke"
+    actions   = ["bedrock:InvokeModel"]
+    resources = [local.bedrock_moderation_model_arn]
   }
 }
 
