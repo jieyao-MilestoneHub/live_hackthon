@@ -4,6 +4,7 @@ import './globals.css';
 import { fontVars } from './fonts';
 import Brand from '@/components/Brand';
 import LoginWidget from '@/components/LoginWidget';
+import AuthGate from '@/components/AuthGate';
 
 export const metadata: Metadata = {
   title: '浪 LIVE — AI 直播高光剪輯',
@@ -30,7 +31,7 @@ export default function RootLayout({
           </div>
         </header>
 
-        {children}
+        <AuthGate>{children}</AuthGate>
 
         <footer className="footer">
           <div className="shell">

@@ -55,6 +55,10 @@ module "backend_lambda" {
   output_bucket  = module.storage_editor.output_bucket
   bucket_arns    = module.storage_editor.bucket_arns
 
+  # Cognito JWT authorizer on the API (blocks anonymous callers from the pipeline).
+  cognito_client_id = module.auth.user_pool_client_id
+  cognito_issuer    = module.auth.user_pool_endpoint
+
   # When set, POST /renders StartExecutions the render workflow (async) instead
   # of running Creative Planning inline, and grants states:StartExecution.
   render_state_machine_arn = module.render_workflow.state_machine_arn

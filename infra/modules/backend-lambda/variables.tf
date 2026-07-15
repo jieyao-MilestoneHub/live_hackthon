@@ -83,6 +83,16 @@ variable "render_state_machine_arn" {
   description = "Render workflow ARN. When set (env var), POST /renders StartExecutions it (async) instead of running Creative Planning inline."
 }
 
+variable "cognito_client_id" {
+  type        = string
+  description = "Cognito app client id — the JWT audience the API authorizer accepts."
+}
+
+variable "cognito_issuer" {
+  type        = string
+  description = "Cognito user pool endpoint (cognito-idp.<region>.amazonaws.com/<pool_id>); issuer = https://<this>."
+}
+
 variable "enable_render_start" {
   type        = bool
   default     = false

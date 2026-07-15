@@ -26,6 +26,13 @@ resource "aws_cognito_user_pool" "editor" {
   # MVP: no MFA. Cognito-hosted email for verification (low volume, dev only).
   mfa_configuration = "OFF"
 
+  # Lock down: NO public self-signup — only admin-created users can exist. This
+  # prevents anonymous registration → token → abuse of the (billable) render
+  # pipeline. Provision the demo account with `aws cognito-idp admin-create-user`.
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
+
   account_recovery_setting {
     recovery_mechanism {
       name     = "verified_email"
