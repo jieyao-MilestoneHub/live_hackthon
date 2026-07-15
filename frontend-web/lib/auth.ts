@@ -118,8 +118,17 @@ export function getUserEmail(): string | null {
   }
 }
 
+/** True when the JWT is past its `exp` (with a 30s skew). Cognito IdTokens last
+ * ~1h; an expired token 401s at the API Gateway, so we treat it as logged-out. */
+export function isTokenExpired(token: string): boolean {
+  const exp = decodeJwtPayload(token)['exp'];
+  if (typeof exp !== 'number') return false; // no exp claim → don't force logout
+  return exp * 1000 <= Date.now() + 30_000;
+}
+
 export function isLoggedIn(): boolean {
-  return !!getIdToken();
+  const token = getIdToken();
+  return !!token && !isTokenExpired(token);
 }
 
 /** Decode a JWT payload without verifying the signature (display-only). */
