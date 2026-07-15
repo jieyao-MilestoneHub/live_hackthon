@@ -154,6 +154,29 @@ def sliding_hot_windows(
 
     all_times = [int(m["time_ms"]) for m in messages] or [started]
     last_offset_ms = max(0, max(all_times) - started)
+
+    # 全場時長比一個視窗還短時，滾動門檻統計沒有意義（連一個「完整回看」的
+    # 點位都湊不齊）。這種退化情境直接比照方法一的精神：只要有真人留言，
+    # 整段就是一個候選窗，不跑滾動邏輯。
+    if last_offset_ms < window_ms:
+        if not human:
+            return {"mean": 0.0, "sigma_value": 0.0, "threshold": 0.0, "windows": []}
+        real_start = min(int(m["time_ms"]) for m in human)
+        real_end = max(int(m["time_ms"]) for m in human)
+        return {
+            "mean": float(len(human)),
+            "sigma_value": 0.0,
+            "threshold": float(len(human)),
+            "windows": [
+                {
+                    "start_epoch_ms": real_start,
+                    "end_epoch_ms": real_end,
+                    "human_count": len(human),
+                    "peak_minute_volume": len(human),
+                }
+            ],
+        }
+
     n_bins = last_offset_ms // step_ms + 1
 
     bin_counts = [0] * (n_bins + 1)
@@ -171,8 +194,12 @@ def sliding_hot_windows(
             running -= bin_counts[i - window_bins]
         rolling.append(running)
 
-    mean = statistics.fmean(rolling) if rolling else 0.0
-    sd = statistics.pstdev(rolling) if len(rolling) > 1 else 0.0
+    # 統計量只用「視窗已完整回看 window_ms」的點位計算，排除串流開頭那段
+    # 視窗還沒補滿的爬升期（ramp-up）——不然這些偏低的過渡值會混進 mean/std，
+    # 導致門檻被拉到接近尖峰值，短串流或早期爆點反而測不到。
+    valid_rolling = rolling[window_bins - 1:] if len(rolling) >= window_bins else rolling
+    mean = statistics.fmean(valid_rolling) if valid_rolling else 0.0
+    sd = statistics.pstdev(valid_rolling) if len(valid_rolling) > 1 else 0.0
     threshold = mean + sigma * sd
 
     hot_idx = [i for i, r in enumerate(rolling) if r >= threshold and r >= 1]
