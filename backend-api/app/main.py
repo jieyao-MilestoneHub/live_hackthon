@@ -10,11 +10,12 @@ Deploy target: container image (ECR) -> AWS App Runner (or Lambda Function URL).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from jsonschema import ValidationError
 
@@ -63,11 +64,16 @@ from workers import (
     composer_worker,
     creative_worker,
     refine_worker,
+    render_worker,
 )
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 VERSION = "0.2.0"
 
@@ -584,6 +590,13 @@ def create_render(
             orchestration.start_render(render["render_id"], id, render["timeline_version"])
         else:
             render = creative_worker.submit_render(repo, storage, id, req.timeline_version)
+            # Dev-mode offline shim: with no Batch/state machine, also run the
+            # (stub) encode inline so a local CLI/agent gets a finished artifact to
+            # download. Opt-in via RENDER_INLINE_ENCODE (default off keeps tests,
+            # which assert the QUEUED plan-only result, unchanged).
+            if _env_flag("RENDER_INLINE_ENCODE"):
+                render_worker.run(repo, storage, id, render["render_id"])
+                render = repo.get_render_by_id(render["render_id"]) or render
     except InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
@@ -614,6 +627,55 @@ def get_artifact_download_url(
     settings = get_settings()
     url = storage.presigned_get(settings.output_bucket, artifact["video_key"])
     return DownloadUrl(url=url, expires_in_sec=settings.presign_expiry_sec)
+
+
+# --- Stub object-store routes (in-memory / offline dev only) ---------------
+# StubStorage (USE_INMEMORY=1) hands out presigned URLs of the form
+# http://localhost:8080/stub-upload|stub-download/{bucket}/{key}. These two routes
+# make those URLs functional so a decoupled HTTP client (the crestcut CLI, or the
+# web frontend) can round-trip a real upload/download against the local in-memory
+# backend with zero AWS — the same PUT/GET the browser does against real S3. In
+# real-AWS mode (USE_INMEMORY=0) presigned URLs point at S3 and these are never hit.
+
+
+def _require_stub_mode() -> None:
+    """Hard security guard: these dev routes exist ONLY for the in-memory backend.
+    In real-AWS mode (USE_INMEMORY=0) they MUST be inert — otherwise they'd be an
+    unauthenticated arbitrary object read/write against real S3 buckets."""
+    if not get_settings().use_inmemory:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+@app.put("/stub-upload/{bucket}/{key:path}")
+async def stub_upload_put(
+    bucket: str,
+    key: str,
+    request: Request,
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    """Accept a direct PUT to a StubStorage presigned URL; persist the bytes."""
+    _require_stub_mode()
+    body = await request.body()
+    content_type = request.headers.get("content-type", "application/octet-stream")
+    storage.put_bytes(bucket, key, body, content_type)
+    # Mimic S3: return a (quoted) ETag so multipart clients can complete the upload.
+    etag = '"' + hashlib.md5(body).hexdigest() + '"'  # noqa: S324 — non-crypto object id
+    return Response(status_code=200, headers={"ETag": etag})
+
+
+@app.get("/stub-download/{bucket}/{key:path}")
+def stub_download_get(
+    bucket: str,
+    key: str,
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    """Serve bytes previously written to StubStorage (presigned GET target)."""
+    _require_stub_mode()
+    try:
+        data = storage.get_bytes(bucket, key)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no object at {bucket}/{key}")
+    return Response(content=data, media_type="application/octet-stream")
 
 
 # --- Speaker Attribution feature (mounted) ---------------------------------
