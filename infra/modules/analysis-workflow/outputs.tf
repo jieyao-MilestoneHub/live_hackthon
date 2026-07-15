@@ -8,6 +8,11 @@ output "worker_function_arns" {
   value       = { for k, fn in aws_lambda_function.worker : k => fn.arn }
 }
 
+output "worker_function_names" {
+  description = "List of worker Lambda function names (for CloudWatch dashboards/alarms)."
+  value       = [for fn in aws_lambda_function.worker : fn.function_name]
+}
+
 output "worker_role_arn" {
   description = "Shared analysis-worker execution role ARN."
   value       = aws_iam_role.worker.arn

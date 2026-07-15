@@ -10,14 +10,20 @@ variable "image_uri" {
 
 variable "memory" {
   type        = number
-  default     = 512
-  description = "Lambda memory (MB)."
+  default     = 1024
+  description = "Lambda memory (MB). 1024 so presigning hundreds of multipart part URLs (a 10GB file → ~640 parts) stays well within the API Gateway 30s window."
 }
 
 variable "timeout" {
   type        = number
   default     = 30
   description = "Lambda timeout (seconds)."
+}
+
+variable "reserved_concurrency" {
+  type        = number
+  default     = -1
+  description = "Reserved concurrent executions for the backend. -1 = unreserved (default). Set ≥30 to guarantee upload-session/complete calls never throttle when the analysis pipeline saturates the shared account pool during a batch demo."
 }
 
 variable "tags" {
@@ -73,14 +79,42 @@ variable "bucket_arns" {
 
 variable "presign_expiry_sec" {
   type        = number
-  default     = 900
-  description = "Presigned URL expiry (seconds)."
+  default     = 21600
+  description = "Presigned URL expiry (seconds). 21600 (6h): a 10GB upload at ~15Mbps takes 90+ min, so the old 900s guaranteed mid-flight expiry. Bounded by the Lambda role's temp-credential lifetime."
+}
+
+variable "max_upload_bytes" {
+  type        = number
+  default     = 10737418240 # 10 * 1024^3 = 10 GiB
+  description = "Per-file upload cap (bytes). create_upload_session returns 413 above this."
+}
+
+variable "max_batch_files" {
+  type        = number
+  default     = 20
+  description = "Advisory per-batch file-count cap (enforced client-side; exposed for parity)."
+}
+
+variable "moderation_enabled" {
+  type        = bool
+  default     = true
+  description = "Content-moderation feature flag. Gates render/download on the moderation verdict. Set false if Rekognition/Bedrock moderation isn't granted in the account."
 }
 
 variable "render_state_machine_arn" {
   type        = string
   default     = ""
   description = "Render workflow ARN. When set (env var), POST /renders StartExecutions it (async) instead of running Creative Planning inline."
+}
+
+variable "cognito_client_id" {
+  type        = string
+  description = "Cognito app client id — the JWT audience the API authorizer accepts."
+}
+
+variable "cognito_issuer" {
+  type        = string
+  description = "Cognito user pool endpoint (cognito-idp.<region>.amazonaws.com/<pool_id>); issuer = https://<this>."
 }
 
 variable "enable_render_start" {

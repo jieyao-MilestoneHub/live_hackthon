@@ -145,6 +145,11 @@ resource "aws_lambda_function" "backend" {
   timeout       = var.timeout
   architectures = ["x86_64"]
 
+  # -1 = unreserved. Set ≥30 for the batch demo so upload control-plane calls
+  # (create-session / complete) can't be starved by pipeline Lambdas sharing the
+  # account concurrency pool.
+  reserved_concurrent_executions = var.reserved_concurrency
+
   # Runtime config for app/settings.py. AWS_REGION is reserved/injected by the
   # Lambda runtime, so we must NOT set it here. Names must match the REAL
   # resources (…-dev-<acct>) — the app defaults (VideoEditor / video-editor-*)
@@ -158,6 +163,9 @@ resource "aws_lambda_function" "backend" {
       WORK_BUCKET              = var.work_bucket
       OUTPUT_BUCKET            = var.output_bucket
       PRESIGN_EXPIRY_SEC       = tostring(var.presign_expiry_sec)
+      MAX_UPLOAD_BYTES         = tostring(var.max_upload_bytes)
+      MAX_BATCH_FILES          = tostring(var.max_batch_files)
+      MODERATION_ENABLED       = var.moderation_enabled ? "1" : "0"
       RENDER_STATE_MACHINE_ARN = var.render_state_machine_arn
 
       # edit-by-language sidecar. AI_TASK_QUEUE_URL empty → sidecar skips enqueue
@@ -189,10 +197,45 @@ resource "aws_apigatewayv2_integration" "lambda" {
   payload_format_version = "2.0"
 }
 
+# --- Cognito JWT authorizer: every route EXCEPT public health + CORS preflight
+#     requires a valid Cognito ID token, so anonymous callers can't drive the
+#     (billable) upload/analyze/render pipeline. ---
+resource "aws_apigatewayv2_authorizer" "jwt" {
+  api_id           = aws_apigatewayv2_api.http.id
+  name             = "${var.name}-cognito-jwt"
+  authorizer_type  = "JWT"
+  identity_sources = ["$request.header.Authorization"]
+  jwt_configuration {
+    audience = [var.cognito_client_id]
+    issuer   = "https://${var.cognito_issuer}"
+  }
+}
+
+# All real endpoints: JWT-protected.
 resource "aws_apigatewayv2_route" "default" {
-  api_id    = aws_apigatewayv2_api.http.id
-  route_key = "$default"
-  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  api_id             = aws_apigatewayv2_api.http.id
+  route_key          = "$default"
+  target             = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.jwt.id
+}
+
+# Public health check (no token) for uptime monitoring.
+resource "aws_apigatewayv2_route" "health" {
+  api_id             = aws_apigatewayv2_api.http.id
+  route_key          = "GET /health"
+  target             = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  authorization_type = "NONE"
+}
+
+# CORS preflight carries no Authorization header, so it must bypass the authorizer
+# (FastAPI's CORS middleware answers the OPTIONS). Actual GET/POST/... still hit
+# $default (JWT). More-specific routes win over $default.
+resource "aws_apigatewayv2_route" "options" {
+  api_id             = aws_apigatewayv2_api.http.id
+  route_key          = "OPTIONS /{proxy+}"
+  target             = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+  authorization_type = "NONE"
 }
 
 resource "aws_apigatewayv2_stage" "default" {

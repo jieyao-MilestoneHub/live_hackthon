@@ -21,13 +21,15 @@ from typing import Any
 from app.repository import ProjectRepository
 from app.settings import get_settings
 from app.state import (
+    InvalidTransition,
     ProjectState,
     RenderState,
-    assert_project_transition,
+    advance_project_if_allowed,
     assert_render_transition,
 )
 from app.storage import Storage
-from creative import build_render_spec, plan_effects, plan_subtitles
+from analysis.annotations import build_annotations
+from creative import DUAL_TRACK_ROUTES, build_render_spec, get_creative_planner
 
 
 def _now_iso() -> str:
@@ -39,22 +41,37 @@ def _effect_seed(render_id: str) -> int:
     return int.from_bytes(hashlib.sha256(render_id.encode()).digest()[:4], "big")
 
 
+# Project states from which a render may be submitted (render-capable). Includes
+# the render phase itself so the dual-track (分流) second route re-enters cleanly.
+_RENDER_CAPABLE = {
+    ProjectState.READY_TO_EDIT,
+    ProjectState.RENDER_REQUESTED,
+    ProjectState.RENDERING,
+    ProjectState.ARTIFACT_READY,
+}
+
+
 def create_render_record(
     repo: ProjectRepository,
     project_id: str,
     timeline_version: int | None = None,
+    route: str = "pipeline",
 ) -> dict[str, Any]:
     """Freeze the timeline_version, allocate render_id/artifact_id/effect_seed,
-    write the Render item (CREATED) and flip the Project to RENDER_REQUESTED.
+    write the Render item (CREATED, tagged ``route``) and flip the Project to
+    RENDER_REQUESTED (guarded).
 
-    This is the control-plane part (no planning, no FFmpeg). The async render
-    workflow then runs creative planning + the Batch encode. Raises ``KeyError``
-    if the project is missing, ``ValueError`` if there is no timeline to render.
+    Control-plane part (no planning, no FFmpeg). Raises ``KeyError`` if the project
+    is missing, ``ValueError`` if there is no timeline, ``InvalidTransition`` if the
+    project is not render-capable. Dual-track submits one record per ``route``; the
+    guarded project advance tolerates the second route re-entering RENDER_REQUESTED.
     """
     project = repo.get_project(project_id)
     if project is None:
         raise KeyError(f"project {project_id} not found")
-    assert_project_transition(ProjectState(project["status"]), ProjectState.RENDER_REQUESTED)
+    current = ProjectState(project["status"])
+    if current not in _RENDER_CAPABLE:
+        raise InvalidTransition(f"cannot render from {current.value}")
 
     tv = int(timeline_version) if timeline_version is not None else int(
         project.get("latest_timeline_version") or 0
@@ -67,6 +84,7 @@ def create_render_record(
     render = {
         "render_id": render_id,
         "project_id": project_id,
+        "route": route,
         "timeline_version": tv,
         "status": RenderState.CREATED.value,
         "current_stage": "Created",
@@ -75,10 +93,8 @@ def create_render_record(
         "created_at": _now_iso(),
     }
     repo.put_render(project_id, render)
-    repo.update_project(
-        project_id,
-        {"status": ProjectState.RENDER_REQUESTED.value, "latest_render_id": render_id},
-    )
+    advance_project_if_allowed(repo, project_id, ProjectState.RENDER_REQUESTED)
+    repo.update_project(project_id, {"latest_render_id": render_id})
     return render
 
 
@@ -87,11 +103,27 @@ def submit_render(
     storage: Storage,
     project_id: str,
     timeline_version: int | None = None,
+    route: str = "pipeline",
 ) -> dict[str, Any]:
     """Create a render record then run creative planning inline (offline / CLI /
     the control-plane inline shim). Returns the Render item (status QUEUED)."""
-    render = create_render_record(repo, project_id, timeline_version)
+    render = create_render_record(repo, project_id, timeline_version, route=route)
     return run(repo, storage, project_id, render["render_id"])
+
+
+def submit_render_routes(
+    repo: ProjectRepository,
+    storage: Storage,
+    project_id: str,
+    timeline_version: int | None = None,
+    routes: tuple[str, ...] = DUAL_TRACK_ROUTES,
+) -> list[dict[str, Any]]:
+    """雙軌分流：對每個 route 各建一個 render 並 inline 跑創意規劃（序列）。
+
+    回傳每個 route 的 Render item（status QUEUED）。真雲端由 chat_starter 對每個 route
+    各 ``create_render_record`` + ``start_render``（兩個獨立 SFN execution）。
+    """
+    return [submit_render(repo, storage, project_id, timeline_version, route=r) for r in routes]
 
 
 def _advance(
@@ -134,16 +166,31 @@ def run(
     effect_seed = int(render["effect_seed"])
     artifact_id = render["artifact_id"]
     work_bucket = settings.work_bucket
+    # 雙軌分流：依 render.route 選創意規劃器（pipeline | agent；agent worktree 可覆寫）。
+    planner = get_creative_planner(render.get("route", "pipeline"))
 
-    # 1. Subtitle plan.
+    # 起承轉合標註：優先用已落地/使用者編修過的 annotations.v1，否則就地由 highlights 產生。
+    try:
+        annotations = storage.get_json(work_bucket, settings.annotations_key(tenant, project_id))
+    except KeyError:
+        annotations = build_annotations(highlights, project_id=project_id)
+
+    # 使用者在 timeline 上的字幕/特效設定（開放物件；字型/顏色/位置/強度覆寫）。
+    subtitle_settings = timeline.get("subtitle_settings")
+    effect_settings = timeline.get("effect_settings")
+
+    # 1. Subtitle plan（兩層：逐字稿 caption + 爆點 keyword 動畫，套樣式）。
     _advance(repo, project_id, render_id, RenderState.PLANNING_SUBTITLES, "GenerateSubtitlePlan")
-    subtitle = plan_subtitles(timeline, highlights, project_id, render_id)
+    subtitle = planner.plan_subtitle(
+        timeline, highlights, project_id, render_id,
+        annotations=annotations, settings=subtitle_settings,
+    )
     subtitle_key = settings.render_key(tenant, project_id, render_id, "subtitle.json")
     storage.put_json(work_bucket, subtitle_key, subtitle)
 
-    # 2. Effect plan (deterministic via effect_seed).
+    # 2. Effect plan (deterministic via effect_seed；依 intensity 調強度)。
     _advance(repo, project_id, render_id, RenderState.PLANNING_EFFECTS, "GenerateEffectPlan")
-    effects = plan_effects(timeline, effect_seed, project_id, render_id)
+    effects = planner.plan_effects(timeline, effect_seed, project_id, render_id, settings=effect_settings)
     effect_plan_key = settings.render_key(tenant, project_id, render_id, "effect-plan.json")
     storage.put_json(work_bucket, effect_plan_key, effects)
 

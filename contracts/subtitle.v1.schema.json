@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://live-hackthon/contracts/subtitle.v1.schema.json",
   "title": "subtitle.v1",
-  "description": "動態字幕計畫（Creative Planning Worker 輸出，供 FFmpeg 燒字幕）。時間一律毫秒（ms）。另會伴隨產出 subtitle.vtt / subtitle-style.json，見 demand.md §十二。",
+  "description": "動態字幕計畫（Creative Planning Worker 輸出，供 FFmpeg 燒字幕）。時間一律毫秒（ms）。另會伴隨產出 subtitle.vtt / subtitle-style.json，見 demand.md §十二。兩層字幕（additive、向後相容）：cue.kind=caption 為逐字稿基底字幕；kind=keyword 為爆點關鍵字（精簡代表性、含出現動畫）。style 由兩組 preset（caption/keyword）+ 使用者覆寫合併。既有 start_ms/end_ms/text 語意不變。",
   "type": "object",
   "required": ["schema_version", "language", "cues"],
   "additionalProperties": false,
@@ -11,7 +11,7 @@
     "language": { "type": "string", "description": "BCP-47，如 zh-TW" },
     "project_id": { "type": "string" },
     "render_id": { "type": "string" },
-    "style": { "type": "object", "additionalProperties": true, "description": "字體/大小/顏色/位置等樣式，對應 subtitle-style.json" },
+    "style": { "type": "object", "additionalProperties": true, "description": "字體/大小/顏色/邊框/位置等樣式，對應 subtitle-style.json。可含 caption/keyword 兩組 preset 與其覆寫。" },
     "cues": {
       "type": "array",
       "items": { "$ref": "#/$defs/cue" }
@@ -26,7 +26,27 @@
         "start_ms": { "type": "integer", "minimum": 0 },
         "end_ms": { "type": "integer", "minimum": 0 },
         "text": { "type": "string" },
-        "emphasis_words": { "type": "array", "items": { "type": "string" }, "description": "需強調/動畫呈現的關鍵詞" }
+        "emphasis_words": { "type": "array", "items": { "type": "string" }, "description": "需強調/動畫呈現的關鍵詞" },
+        "kind": {
+          "type": "string",
+          "enum": ["caption", "keyword"],
+          "default": "caption",
+          "description": "caption=逐字稿基底字幕（好位置）；keyword=爆點關鍵字（精簡、置中偏上、含出現動畫）。未提供時視為 caption。"
+        },
+        "style": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "此 cue 的樣式覆寫（覆蓋所屬 kind 的 preset）；字型/字體/顏色/邊框/位置等。"
+        },
+        "animation": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "出現動畫（多用於 keyword），如 {type: pop, duration_ms: 240}。",
+          "properties": {
+            "type": { "type": "string", "description": "動畫類型，如 pop / fade / flash / shake / none" },
+            "duration_ms": { "type": "integer", "minimum": 0 }
+          }
+        }
       }
     }
   }

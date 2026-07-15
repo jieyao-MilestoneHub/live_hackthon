@@ -16,9 +16,11 @@ from typing import Any
 
 from app.settings import Settings, get_settings
 
-# S3 requires every part except the last to be >= 5 MiB. Use 8 MiB as the
-# default chunk when deriving a part count from a file size.
-_PART_SIZE_BYTES = 8 * 1024 * 1024
+# S3 requires every part except the last to be >= 5 MiB. Use 16 MiB as the
+# default chunk when deriving a part count from a file size: a 10GB file →
+# 640 parts (well under the 10,000-part cap; headroom to ~156GB), and the
+# presign response (~640 URLs) stays well under Lambda's 6MB sync payload.
+_PART_SIZE_BYTES = 16 * 1024 * 1024
 _MAX_PARTS = 10_000
 
 
@@ -149,9 +151,18 @@ class StubStorage(Storage):
 class S3Storage(Storage):
     def __init__(self, settings: Settings) -> None:
         import boto3  # lazy import
+        from botocore.config import Config
 
         self._settings = settings
-        self._client = boto3.client("s3", region_name=settings.aws_region)
+        # Force SigV4 presigning. A SigV2 presigned PUT bakes a Content-Type into
+        # the signature (StringToSign), so a browser PUT that doesn't send that
+        # exact Content-Type gets SignatureDoesNotMatch (403). SigV4 signs only the
+        # host (UNSIGNED-PAYLOAD), so the browser's presigned video/chat upload works.
+        self._client = boto3.client(
+            "s3",
+            region_name=settings.aws_region,
+            config=Config(signature_version="s3v4"),
+        )
 
     def create_upload_session(
         self, key: str, part_count: int, content_type: str | None = None

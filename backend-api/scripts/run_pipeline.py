@@ -144,37 +144,49 @@ def main() -> int:
         f"(target={timeline['target_duration_ms']}ms), status -> READY_TO_EDIT"
     )
 
+    # 階段 7–8：結構化標註（起承轉合 5 維度 + beats）。兩條流程皆產出；chat 流程先落地
+    # chatlog 供 chat_highlights 取留言。composer/creative 也會就地產生，此處落地供編輯器可見。
+    storage = get_storage()
     if chatlog is not None:
-        # 階段 7–8：結構化標註（chat 流程 demo）。先落地 chatlog 供 chat_highlights 取留言。
-        storage = get_storage()
         storage.put_json(settings.work_bucket, settings.chatlog_key("demo", project_id), chatlog)
-        annotations = annotation_worker.run(repo, storage, settings, project_id)
-        print(
-            f"[pipeline] annotate -> {len(annotations['annotations'])} annotated highlights "
-            f"(5 維度 + beats each)"
-        )
+    annotations = annotation_worker.run(repo, storage, settings, project_id)
+    print(
+        f"[pipeline] annotate -> {len(annotations['annotations'])} annotated highlights "
+        f"(起承轉合 5 維度 + beats each)"
+    )
 
-        if args.refine:
-            # 階段 5–6：AI 精修（Stub Transcribe/Bedrock）——提議笑點 offset + 填台詞。
-            refined = refine_worker.run(repo, storage, settings, project_id)
-            print(
-                f"[pipeline] refine   -> {len(refined['proposed_offsets'])} offset 提議, "
-                f"transcript {refined['transcript_segment_count']} 段, annotations 台詞已填(Stub)"
-            )
+    if args.refine:
+        # 階段 5–6：AI 精修（Stub Transcribe/Bedrock）——提議笑點 offset + 填台詞。
+        refined = refine_worker.run(repo, storage, settings, project_id)
+        print(
+            f"[pipeline] refine   -> {len(refined['proposed_offsets'])} offset 提議, "
+            f"transcript {refined['transcript_segment_count']} 段, annotations 台詞已填(Stub)"
+        )
 
     if args.render:
+        from workers.lambda_handlers import _dual_track_routes
+
         storage = get_storage()
-        render = creative_worker.submit_render(repo, storage, project_id)
-        print(
-            f"[pipeline] plan     -> {render['render_id']}, status -> {render['status']}, "
-            f"effect_seed={render['effect_seed']}, timeline v{render['timeline_version']}"
+        # 雙軌分流：預設只跑 pipeline（與部署一致）；設 DUAL_TRACK=on 才對 pipeline + agent
+        # 兩路各建 render + 規劃 + 編碼，各產一份成品。復用單一政策函式，避免重複開關邏輯。
+        renders = creative_worker.submit_render_routes(
+            repo, storage, project_id, routes=_dual_track_routes()
         )
-        artifact = render_worker.run(repo, storage, project_id, render["render_id"])
-        print(
-            f"[pipeline] render   -> artifact {artifact['artifact_id']}, status -> READY, "
-            f"{artifact['resolution']['width']}x{artifact['resolution']['height']}, "
-            f"video_key={artifact['files']['video_key']}, status -> SUCCEEDED / ARTIFACT_READY"
-        )
+        for render in renders:
+            route = render.get("route", "pipeline")
+            print(
+                f"[pipeline] plan[{route}] -> {render['render_id']}, status -> {render['status']}, "
+                f"effect_seed={render['effect_seed']}, timeline v{render['timeline_version']}"
+            )
+            artifact = render_worker.run(repo, storage, project_id, render["render_id"])
+            print(
+                f"[pipeline] render[{route}] -> artifact {artifact['artifact_id']} (route={artifact.get('route')}), "
+                f"{artifact['resolution']['width']}x{artifact['resolution']['height']}, "
+                f"video_key={artifact['files']['video_key']}"
+            )
+        arts = repo.list_artifacts(project_id)
+        print(f"[pipeline] artifacts -> {len(arts)} downloadable: "
+              + ", ".join(f"{a.get('route')}={a['artifact_id']}" for a in arts))
 
     print(f"[pipeline] DONE. project_id = {project_id}")
     return 0

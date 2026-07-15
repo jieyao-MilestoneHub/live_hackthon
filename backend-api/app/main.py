@@ -10,30 +10,35 @@ Deploy target: container image (ECR) -> AWS App Runner (or Lambda Function URL).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from jsonschema import ValidationError
 
 from analysis.chatlog import clean_chatlog
 from analysis.chatlog.correction import apply_correction, creation_time_to_epoch_ms
 from analysis.validate import validate_annotations, validate_highlights, validate_timeline
-from app.auth import Principal, current_principal
+from app.auth import Principal, current_principal, require_moderator
 from app.aws import orchestration
 from app.repository import ProjectRepository, get_repository
 from app.schemas import (
     AnalyzeRequest,
     AnalyzeResult,
     Annotations,
+    Artifact,
     ChatUploadUrl,
     ComposeRequest,
     DownloadUrl,
     Highlight,
     HighlightList,
     HighlightPatch,
+    ModerationEvent,
+    ModerationOverrideRequest,
+    ModerationView,
     Project,
     ProjectCreate,
     ProjectCreated,
@@ -52,9 +57,11 @@ from app.schemas import (
 from app.settings import get_settings
 from app.state import (
     InvalidTransition,
+    ModerationStatus,
     ProjectState,
     advance_to_analyzing,
     assert_project_transition,
+    moderation_allows_publish,
 )
 from app.storage import Storage, get_storage, resolve_part_count
 from workers import (
@@ -63,11 +70,16 @@ from workers import (
     composer_worker,
     creative_worker,
     refine_worker,
+    render_worker,
 )
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 VERSION = "0.2.0"
 
@@ -86,6 +98,49 @@ app.add_middleware(
 
 def _new_project_id() -> str:
     return f"project-{uuid.uuid4().hex[:12]}"
+
+
+# Accepted video containers for the batch upload path. Enforced in
+# create_upload_session so the presign gate rejects non-video files up front.
+_ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
+
+
+def _is_allowed_video(content_type: str | None, filename: str | None) -> bool:
+    """A file passes if its content_type is video/* OR its extension is allowed."""
+    if content_type and content_type.strip().lower().startswith("video/"):
+        return True
+    if filename:
+        name = filename.strip().lower()
+        return any(name.endswith(ext) for ext in _ALLOWED_VIDEO_EXTS)
+    return False
+
+
+# Lifecycle states a project can be rendered from (mirrors _PROJECT_TRANSITIONS).
+_RENDERABLE_STATES = {ProjectState.READY_TO_EDIT, ProjectState.ARTIFACT_READY}
+
+
+def _assert_publishable(project: dict) -> None:
+    """403 unless content moderation permits publishing (render/download). No-op
+    when moderation is disabled (feature flag off / pre-moderation projects)."""
+    if not get_settings().moderation_enabled:
+        return
+    status = project.get("moderation_status")
+    if not moderation_allows_publish(status):
+        raise HTTPException(
+            status_code=403,
+            detail=f"內容審核（{status or 'PENDING'}）尚未通過，不可發布；需管理員複核",
+        )
+
+
+def _moderation_view(project: dict, repo: ProjectRepository) -> ModerationView:
+    events = [ModerationEvent(**e) for e in repo.list_moderation_events(project["project_id"])]
+    status = project.get("moderation_status") or ModerationStatus.PENDING.value
+    return ModerationView(
+        project_id=project["project_id"],
+        status=status,
+        latest=events[-1] if events else None,
+        events=events,
+    )
 
 
 @app.get("/health")
@@ -147,6 +202,26 @@ def create_upload_session(
         assert_project_transition(ProjectState(project["status"]), ProjectState.UPLOAD_PENDING)
     except InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+    settings = get_settings()
+    # Per-file size cap (default 10GB). Enforced here because the browser uploads
+    # bytes straight to S3 via presigned URLs — this is the only server-side gate.
+    if body.size_bytes is not None and body.size_bytes > settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"file too large: {body.size_bytes} bytes exceeds the "
+                f"{settings.max_upload_bytes}-byte per-file limit"
+            ),
+        )
+    if not _is_allowed_video(body.content_type, body.filename):
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                "unsupported media type: expected a video (content_type video/* or "
+                f"extension in {sorted(_ALLOWED_VIDEO_EXTS)})"
+            ),
+        )
 
     part_count = resolve_part_count(body.part_count, body.size_bytes)
     session = storage.create_upload_session(
@@ -575,15 +650,29 @@ def create_render(
     # workflow is deployed (RENDER_STATE_MACHINE_ARN set), just create the render
     # record and StartExecution — creative planning + Batch encode run async.
     # Offline / no state machine falls back to the inline shim so tests + CLI work.
-    if repo.get_project(id) is None:
+    project = repo.get_project(id)
+    if project is None:
         raise HTTPException(status_code=404, detail="project not found")
+    # Moderation gate only for projects that are otherwise renderable — a not-ready
+    # project falls through to the worker's 409 readiness error (more precise than
+    # a moderation 403 for a project that was never scanned).
+    if ProjectState(project["status"]) in _RENDERABLE_STATES:
+        _assert_publishable(project)  # no render for BLOCKED / unreviewed-FLAGGED
     req = body or RenderCreate()
+    route = req.route or "pipeline"
     try:
         if os.environ.get("RENDER_STATE_MACHINE_ARN"):
-            render = creative_worker.create_render_record(repo, id, req.timeline_version)
+            render = creative_worker.create_render_record(repo, id, req.timeline_version, route=route)
             orchestration.start_render(render["render_id"], id, render["timeline_version"])
         else:
-            render = creative_worker.submit_render(repo, storage, id, req.timeline_version)
+            render = creative_worker.submit_render(repo, storage, id, req.timeline_version, route=route)
+            # Dev-mode offline shim: with no Batch/state machine, also run the
+            # (stub) encode inline so a local CLI/agent gets a finished artifact to
+            # download. Opt-in via RENDER_INLINE_ENCODE (default off keeps tests,
+            # which assert the QUEUED plan-only result, unchanged).
+            if _env_flag("RENDER_INLINE_ENCODE"):
+                render_worker.run(repo, storage, id, render["render_id"])
+                render = repo.get_render_by_id(render["render_id"]) or render
     except InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except ValueError as exc:
@@ -602,6 +691,17 @@ def get_render(
     return Render(**render)
 
 
+@app.get("/projects/{id}/artifacts", response_model=list[Artifact])
+def list_artifacts(
+    id: str,
+    repo: ProjectRepository = Depends(get_repository),
+) -> list[Artifact]:
+    """雙軌分流：列出 project 全部成品（每個 route 一份），供前端各給一顆下載鍵。"""
+    if repo.get_project(id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return [Artifact(**a) for a in repo.list_artifacts(id)]
+
+
 @app.get("/artifacts/{artifact_id}/download", response_model=DownloadUrl)
 def get_artifact_download_url(
     artifact_id: str,
@@ -611,9 +711,108 @@ def get_artifact_download_url(
     artifact = repo.get_artifact_by_id(artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="artifact not found")
+    # Defense in depth: an artifact may have been rendered before a later block /
+    # takedown — re-check the owning project's moderation verdict before signing.
+    owner = repo.get_project(artifact.get("project_id")) if artifact.get("project_id") else None
+    if owner is not None:
+        _assert_publishable(owner)
     settings = get_settings()
     url = storage.presigned_get(settings.output_bucket, artifact["video_key"])
     return DownloadUrl(url=url, expires_in_sec=settings.presign_expiry_sec)
+
+
+@app.get("/projects/{id}/moderation", response_model=ModerationView)
+def get_moderation(
+    id: str,
+    repo: ProjectRepository = Depends(get_repository),
+) -> ModerationView:
+    """Current moderation verdict + immutable audit trail (SCAN/REVIEW/OVERRIDE)."""
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return _moderation_view(project, repo)
+
+
+@app.post("/projects/{id}/moderation/override", response_model=ModerationView)
+def override_moderation(
+    id: str,
+    body: ModerationOverrideRequest,
+    principal: Principal = Depends(require_moderator),
+    repo: ProjectRepository = Depends(get_repository),
+) -> ModerationView:
+    """Moderator review/override. ALLOW → OVERRIDDEN (publishable); BLOCK → BLOCKED.
+    Appends an immutable moderation.v1 audit record stamped with the moderator."""
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    new_status = (
+        ModerationStatus.OVERRIDDEN.value if body.decision == "ALLOW"
+        else ModerationStatus.BLOCKED.value
+    )
+    now = _now_iso()
+    event = {
+        "schema_version": "moderation.v1",
+        "moderation_id": f"mod-{uuid.uuid4().hex[:12]}",
+        "project_id": id,
+        "status": new_status,
+        "action": "OVERRIDE",
+        "decided_by": principal.user_id,
+        "decided_at": now,
+        "note": body.note,
+        "created_at": now,
+    }
+    repo.put_moderation_event(id, event)
+    updated = repo.update_project(id, {"moderation_status": new_status})
+    return _moderation_view(updated, repo)
+
+
+# --- Stub object-store routes (in-memory / offline dev only) ---------------
+# StubStorage (USE_INMEMORY=1) hands out presigned URLs of the form
+# http://localhost:8080/stub-upload|stub-download/{bucket}/{key}. These two routes
+# make those URLs functional so a decoupled HTTP client (the crestcut CLI, or the
+# web frontend) can round-trip a real upload/download against the local in-memory
+# backend with zero AWS — the same PUT/GET the browser does against real S3. In
+# real-AWS mode (USE_INMEMORY=0) presigned URLs point at S3 and these are never hit.
+
+
+def _require_stub_mode() -> None:
+    """Hard security guard: these dev routes exist ONLY for the in-memory backend.
+    In real-AWS mode (USE_INMEMORY=0) they MUST be inert — otherwise they'd be an
+    unauthenticated arbitrary object read/write against real S3 buckets."""
+    if not get_settings().use_inmemory:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+@app.put("/stub-upload/{bucket}/{key:path}")
+async def stub_upload_put(
+    bucket: str,
+    key: str,
+    request: Request,
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    """Accept a direct PUT to a StubStorage presigned URL; persist the bytes."""
+    _require_stub_mode()
+    body = await request.body()
+    content_type = request.headers.get("content-type", "application/octet-stream")
+    storage.put_bytes(bucket, key, body, content_type)
+    # Mimic S3: return a (quoted) ETag so multipart clients can complete the upload.
+    etag = '"' + hashlib.md5(body).hexdigest() + '"'  # noqa: S324 — non-crypto object id
+    return Response(status_code=200, headers={"ETag": etag})
+
+
+@app.get("/stub-download/{bucket}/{key:path}")
+def stub_download_get(
+    bucket: str,
+    key: str,
+    storage: Storage = Depends(get_storage),
+) -> Response:
+    """Serve bytes previously written to StubStorage (presigned GET target)."""
+    _require_stub_mode()
+    try:
+        data = storage.get_bytes(bucket, key)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no object at {bucket}/{key}")
+    return Response(content=data, media_type="application/octet-stream")
 
 
 # --- Speaker Attribution feature (mounted) ---------------------------------

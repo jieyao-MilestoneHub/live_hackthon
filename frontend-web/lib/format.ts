@@ -1,7 +1,7 @@
 // Display helpers. Times are milliseconds (ms) end-to-end (contract is ms);
 // formatMs renders a readable m:ss.mmm while the UI also shows raw ms.
 
-import type { ProjectState } from '@/types';
+import type { ModerationStatus, ProjectState } from '@/types';
 
 /** Format an integer millisecond value as `m:ss.mmm` (e.g. 150000 → "2:30.000"). */
 export function formatMs(ms: number): string {
@@ -52,4 +52,30 @@ export function badgeClass(status: ProjectState): string {
   if (status === 'READY_TO_EDIT' || status === 'ARTIFACT_READY') return 'badge done';
   if (status === 'FAILED') return 'badge failed';
   return 'badge running';
+}
+
+/** Content-moderation display copy + badge/severity bucket. */
+export interface ModerationDisplay {
+  label: string;
+  /** 'ok' (allowed/overridden) | 'warn' (flagged/pending) | 'bad' (blocked). */
+  tone: 'ok' | 'warn' | 'bad';
+  /** True when the verdict forbids publishing (render/download gated). */
+  gated: boolean;
+}
+
+const MODERATION_DISPLAY: Record<ModerationStatus, ModerationDisplay> = {
+  PENDING: { label: '審核中', tone: 'warn', gated: true },
+  ALLOWED: { label: '審核通過', tone: 'ok', gated: false },
+  FLAGGED: { label: '已標記 · 待複核', tone: 'warn', gated: true },
+  BLOCKED: { label: '審核未通過 · 已封鎖', tone: 'bad', gated: true },
+  OVERRIDDEN: { label: '管理員已放行', tone: 'ok', gated: false },
+};
+
+export function moderationDisplay(status: ModerationStatus | undefined | null): ModerationDisplay {
+  return status ? MODERATION_DISPLAY[status] : MODERATION_DISPLAY.PENDING;
+}
+
+/** True if the moderation verdict permits render/download (mirrors the backend gate). */
+export function moderationAllowsPublish(status: ModerationStatus | undefined | null): boolean {
+  return status === 'ALLOWED' || status === 'OVERRIDDEN';
 }

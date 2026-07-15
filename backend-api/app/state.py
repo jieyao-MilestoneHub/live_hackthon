@@ -36,6 +36,42 @@ class RenderState(str, Enum):
     FAILED = "FAILED"
 
 
+class ModerationStatus(str, Enum):
+    """Content-moderation verdict — an axis ORTHOGONAL to the Project lifecycle
+    (a project can be ANALYZING/PENDING or READY_TO_EDIT/FLAGGED). Deliberately
+    NOT part of ``_PROJECT_TRANSITIONS`` so the gate is a single-field check, not
+    lifecycle reasoning. Kept in lockstep with ``contracts/openapi.yaml``.
+
+        PENDING     — not yet scanned (default on create).
+        ALLOWED     — auto-scan found nothing above the flag threshold.
+        FLAGGED     — above the flag threshold; may edit, but publish needs review.
+        BLOCKED     — above the block threshold; hard-gated from analyze/render/download.
+        OVERRIDDEN  — a moderator manually allowed it (audit-logged).
+    """
+
+    PENDING = "PENDING"
+    ALLOWED = "ALLOWED"
+    FLAGGED = "FLAGGED"
+    BLOCKED = "BLOCKED"
+    OVERRIDDEN = "OVERRIDDEN"
+
+
+# Verdicts that permit publishing (render/download). FLAGGED needs a moderator
+# review→OVERRIDDEN first; BLOCKED is a hard stop.
+_MODERATION_PUBLISHABLE = {ModerationStatus.ALLOWED, ModerationStatus.OVERRIDDEN}
+
+
+def moderation_allows_publish(status: str | None) -> bool:
+    """True if a project's moderation verdict permits render/download. Unknown or
+    missing status is treated as PENDING (not publishable) — fail-safe."""
+    if not status:
+        return False
+    try:
+        return ModerationStatus(status) in _MODERATION_PUBLISHABLE
+    except ValueError:
+        return False
+
+
 # Any non-terminal Project state may transition to FAILED (pipeline error).
 _PROJECT_TRANSITIONS: dict[ProjectState, set[ProjectState]] = {
     ProjectState.CREATED: {ProjectState.UPLOAD_PENDING},
@@ -80,6 +116,24 @@ def can_transition_project(current: ProjectState, target: ProjectState) -> bool:
 def assert_project_transition(current: ProjectState, target: ProjectState) -> None:
     if not can_transition_project(current, target):
         raise InvalidTransition(f"illegal Project transition {current.value} -> {target.value}")
+
+
+def advance_project_if_allowed(repo: Any, project_id: str, target: ProjectState) -> bool:
+    """Set Project status to ``target`` only if the transition is legal; else no-op.
+
+    For the dual-track (分流) render phase, two routes drive the same Project's single
+    ``status`` field. The second route's redundant transitions (e.g. already at
+    RENDER_REQUESTED / RENDERING / ARTIFACT_READY) would otherwise raise
+    ``InvalidTransition``. This monotonic guard advances the shared status when the
+    edge exists and quietly skips when it doesn't — never raising. Single-render
+    callers behave identically (their edge is always legal). Returns whether it moved.
+    ``repo`` is duck-typed to avoid a state→repository import cycle.
+    """
+    current = ProjectState(repo.get_project(project_id)["status"])
+    if current is target or not can_transition_project(current, target):
+        return False
+    repo.update_project(project_id, {"status": target.value})
+    return True
 
 
 def can_transition_render(current: RenderState, target: RenderState) -> bool:

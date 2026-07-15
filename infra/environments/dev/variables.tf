@@ -76,3 +76,36 @@ variable "bedrock_model_arns" {
   default     = []
   description = "foundation-model / inference-profile ARNs the sidecar may InvokeModel (required when edit_planner_llm=true)."
 }
+
+# --- Batch-upload demo scaling knobs (see plan: 30 users × 10GB) ------------
+
+variable "backend_reserved_concurrency" {
+  type        = number
+  default     = -1
+  description = <<-EOT
+    Reserved concurrent executions for the backend Lambda. -1 = unreserved (safe
+    default). For the batch demo, AFTER verifying the account Lambda concurrency
+    quota (Service Quotas L-B99A9384) has ample headroom, set this to ~40 so
+    upload-session/complete calls can never be throttled by the pipeline Lambdas
+    sharing the pool. WARNING: reserving concurrency fails apply if it would drop
+    the account's unreserved pool below 100 — do not set on a low-cap account.
+  EOT
+}
+
+variable "render_max_vcpus" {
+  type        = number
+  default     = 60
+  description = "Fargate max vCPUs for the render compute environment. At job_vcpu=2 → up to 30 concurrent renders. Ceiling only; still bounded by the Fargate vCPU quota (L-3032A538) — verify before the demo."
+}
+
+variable "highlight_llm_enrich" {
+  type        = bool
+  default     = true
+  description = "Bedrock title/reason enrichment for top highlights. Set false for the demo to drop ~150 concurrent converse calls off the critical path (the deterministic scorer still produces highlights)."
+}
+
+variable "moderation_enabled" {
+  type        = bool
+  default     = true
+  description = "Content moderation (visual Rekognition + text Bedrock) + render/download gate. SCP: Rekognition content moderation is a NEW deployed-IAM surface — probe create→delete before relying on it (CLAUDE.md). Set false if Rekognition/Bedrock moderation isn't granted, so the pipeline marks ALLOWED and never gates."
+}

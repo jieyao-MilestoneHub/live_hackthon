@@ -23,7 +23,12 @@ from app.auth import Principal, current_principal
 from app.aws import bedrock_edit_planner, orchestration
 from app.repository import ProjectRepository, get_repository
 from app.settings import get_settings
-from app.state import InvalidTransition, RenderState, assert_render_transition
+from app.state import (
+    InvalidTransition,
+    RenderState,
+    assert_render_transition,
+    moderation_allows_publish,
+)
 from app.storage import Storage, get_storage
 from creative import build_render_spec
 from workers.creative_worker import create_render_record
@@ -87,6 +92,14 @@ def edit_by_language(
     project = repo.get_project(project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
+
+    # 內容審核 gate：與主 render/download 路徑一致（app.main._assert_publishable）——BLOCKED /
+    # 未複核 FLAGGED 不可經 NL-edit 旁路發布，避免旁路成為未受審核的發布通道。moderation 關閉時 no-op。
+    if settings.moderation_enabled and not moderation_allows_publish(project.get("moderation_status")):
+        raise HTTPException(
+            status_code=403,
+            detail=f"內容審核（{project.get('moderation_status') or 'PENDING'}）尚未通過，不可發布；需管理員複核",
+        )
 
     # 1. 配 render_id/effect_seed、凍結 timeline_version、project→RENDER_REQUESTED（復用）。
     try:

@@ -9,14 +9,16 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from app.aws import bedrock_nova, rekognition, transcribe
+from app.aws import bedrock_nova, moderation, rekognition, transcribe
 from app.aws.config import AttributionConfig, get_attribution_config
 from app.aws.ports import (
     FaceEnrollmentPort,
     FaceSearchPort,
     NarrativeReviewerPort,
     SemanticReviewerPort,
+    TextModerationPort,
     TranscriberPort,
+    VisualModerationPort,
 )
 from app.settings import Settings, get_settings
 
@@ -64,6 +66,27 @@ def get_nova_reviewer() -> SemanticReviewerPort:
 
 
 @lru_cache(maxsize=1)
+def _get_content_moderation():
+    """One concrete object implements both moderation ports (visual + text),
+    mirroring _get_rekognition; exposed via the two typed getters below (ISP)."""
+    settings, config, inmem = _deps()
+    return (
+        moderation.StubContentModeration(settings, config) if inmem
+        else moderation.RealContentModeration(settings, config)
+    )
+
+
+def get_visual_moderation() -> VisualModerationPort:
+    """影片視覺內容審核（Rekognition StartContentModeration）。"""
+    return _get_content_moderation()
+
+
+def get_text_moderation() -> TextModerationPort:
+    """文字內容審核（Bedrock zh-TW 受約束分類）。"""
+    return _get_content_moderation()
+
+
+@lru_cache(maxsize=1)
 def get_narrative_reviewer() -> NarrativeReviewerPort:
     settings, config, inmem = _deps()
     return (
@@ -74,5 +97,11 @@ def get_narrative_reviewer() -> NarrativeReviewerPort:
 
 def cache_clear() -> None:
     """清掉所有 adapter 單例（測試切換 USE_INMEMORY 時呼叫）。"""
-    for fn in (get_transcriber, _get_rekognition, get_nova_reviewer, get_narrative_reviewer):
+    for fn in (
+        get_transcriber,
+        _get_rekognition,
+        get_nova_reviewer,
+        get_narrative_reviewer,
+        _get_content_moderation,
+    ):
         fn.cache_clear()

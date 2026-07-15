@@ -24,7 +24,23 @@ class TranscriberPort(Protocol):
         language_code: str,
         max_speakers: int,
     ) -> dict[str, Any]:
-        """回傳 transcript.v1 dict（segments 帶匿名 ``speaker=spk_N``、時間毫秒）。"""
+        """回傳 transcript.v1 dict（segments 帶匿名 ``speaker=spk_N``、時間毫秒）。
+        同步輔助（本機/測試）；部署管線改用下方非阻塞的 start/poll 拆分。"""
+        ...
+
+    def start_transcription(
+        self,
+        project_id: str,
+        media_uri: str,
+        *,
+        language_code: str,
+        max_speakers: int,
+    ) -> None:
+        """啟動非同步轉錄工作即返回（Step Functions 負責輪詢）。冪等：重複啟動視為已啟動。"""
+        ...
+
+    def poll_transcription(self, project_id: str, *, language_code: str) -> dict[str, Any]:
+        """單次狀態檢查，回傳 {status, transcript?, reason?}；status ∈ IN_PROGRESS/COMPLETED/FAILED。"""
         ...
 
 
@@ -80,6 +96,35 @@ class SemanticReviewerPort(Protocol):
         complex_case: bool = False,
     ) -> str:
         """回傳 ``candidate_person_ids`` 之一或 ``"unknown"``（受約束輸出）。"""
+        ...
+
+
+@runtime_checkable
+class VisualModerationPort(Protocol):
+    """影片視覺內容審核（Amazon Rekognition Video StartContentModeration）。
+
+    非同步：start 啟動工作即返回 job_id，poll 單次查狀態（Step Functions 負責等待/輪詢）。
+    回傳一律正規化為 ``{status, labels:[{name,parent_name,confidence(0–100),timestamp_ms}]}``，
+    呼叫端不需認得 Rekognition 原生格式（DIP/ISP）。"""
+
+    def start_visual_moderation(
+        self, project_id: str, media_uri: str, *, min_confidence: float
+    ) -> str:
+        """啟動非同步內容審核工作，回傳 job_id（冪等：同 project 重複啟動視為同一工作）。"""
+        ...
+
+    def poll_visual_moderation(self, job_id: str) -> dict[str, Any]:
+        """單次狀態檢查，回傳 ``{status, labels}``；status ∈ IN_PROGRESS/COMPLETED/FAILED。"""
+        ...
+
+
+@runtime_checkable
+class TextModerationPort(Protocol):
+    """文字內容審核（Amazon Bedrock — zh-TW 受約束分類）。同步、單次呼叫。"""
+
+    def moderate_text(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """``items``＝``[{"source":..., "text":...}]``（source ∈ transcript/chat/highlight_*/subtitle）。
+        回傳命中項 ``[{source,category,severity(0–1),quote}]``；無命中回空 list。"""
         ...
 
 

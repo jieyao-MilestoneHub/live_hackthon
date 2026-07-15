@@ -3,9 +3,22 @@
 // dependency → static-export safe. The returned IdToken is kept in memory and
 // mirrored to sessionStorage so it survives a page reload within the tab.
 //
-// Backend auth is currently lenient (API Gateway accepts anonymous), so login is
-// OPTIONAL: lib/api.ts only attaches `Authorization: Bearer <IdToken>` when a
-// token exists. Do NOT hard-require login for the demo.
+// Login is REQUIRED: the API Gateway enforces a Cognito JWT authorizer, so every
+// real endpoint 401s without a valid token. AuthGate blocks the app until login;
+// lib/api.ts attaches `Authorization: Bearer <IdToken>`. persist()/logout() fire
+// a `lang-live-auth` window event so AuthGate + the top-bar widget stay in sync.
+
+export const AUTH_EVENT = 'lang-live-auth';
+
+function notifyAuthChange(): void {
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new Event(AUTH_EVENT));
+    } catch {
+      /* no-op */
+    }
+  }
+}
 
 const REGION = process.env.NEXT_PUBLIC_COGNITO_REGION || 'us-east-1';
 const CLIENT_ID = process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID || '';
@@ -37,6 +50,7 @@ function persist(token: string, email: string): void {
   } catch {
     /* sessionStorage unavailable — keep the in-memory copy only */
   }
+  notifyAuthChange();
 }
 
 /**
@@ -108,6 +122,31 @@ export function isLoggedIn(): boolean {
   return !!getIdToken();
 }
 
+/** Decode a JWT payload without verifying the signature (display-only). */
+function decodeJwtPayload(token: string): Record<string, any> {
+  try {
+    const payload = token.split('.')[1];
+    const padded = payload.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(padded));
+  } catch {
+    return {};
+  }
+}
+
+/** True if the logged-in user is in the Cognito ``moderator``/``admin`` group.
+ * Display-gating only — the backend re-checks the role on override. */
+export function isModerator(): boolean {
+  const token = getIdToken();
+  if (!token) return false;
+  const groups = decodeJwtPayload(token)['cognito:groups'];
+  const list: string[] = Array.isArray(groups)
+    ? groups
+    : typeof groups === 'string'
+      ? groups.split(',')
+      : [];
+  return list.map((g) => g.trim().toLowerCase()).some((g) => g === 'moderator' || g === 'admin');
+}
+
 /** Clear the stored token (both in-memory and sessionStorage). */
 export function logout(): void {
   inMemoryToken = null;
@@ -119,4 +158,5 @@ export function logout(): void {
   } catch {
     /* ignore */
   }
+  notifyAuthChange();
 }

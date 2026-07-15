@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.state import ProjectState, RenderState
+from app.state import ModerationStatus, ProjectState, RenderState
 
 AnalysisSource = Literal["transcribe", "chat"]
 
@@ -99,19 +99,63 @@ class Project(BaseModel):
     latest_timeline_version: int | None = None
     latest_render_id: str | None = None
     latest_artifact_id: str | None = None
+    moderation_status: ModerationStatus | None = None
     created_at: str | None = None
     updated_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
 
 
+class ModerationEvent(BaseModel):
+    """One moderation.v1 audit record (SCAN / REVIEW / OVERRIDE)."""
+
+    schema_version: Literal["moderation.v1"] = "moderation.v1"
+    moderation_id: str
+    project_id: str
+    status: ModerationStatus
+    action: Literal["SCAN", "REVIEW", "OVERRIDE"]
+    decided_by: str
+    decided_at: str
+    note: str | None = None
+    policy_version: str | None = None
+    visual: dict | None = None
+    text: dict | None = None
+    created_at: str | None = None
+
+
+class ModerationView(BaseModel):
+    """GET /projects/{id}/moderation response: current verdict + latest + audit trail."""
+
+    project_id: str
+    status: ModerationStatus
+    latest: ModerationEvent | None = None
+    events: list[ModerationEvent] = Field(default_factory=list)
+
+
+class ModerationOverrideRequest(BaseModel):
+    """POST /projects/{id}/moderation/override body (moderator-only)."""
+
+    decision: Literal["ALLOW", "BLOCK"]
+    note: str | None = None
+
+
 class UploadSessionCreate(BaseModel):
-    """POST /projects/{id}/upload-session request body."""
+    """POST /projects/{id}/upload-session request body.
+
+    0.5.0 (batch upload): ``size_bytes`` is the primary input — the server derives
+    the multipart part count from it and enforces the per-file size cap. ``part_count``
+    is deprecated (kept for backward compatibility); if provided it overrides the
+    size-derived count. The upload path is unified: a single file is a batch of 1.
+    """
 
     filename: str = Field(..., examples=["source.mp4"])
     content_type: str | None = Field(default=None, examples=["video/mp4"])
-    part_count: int | None = Field(default=None, ge=1, description="multipart 分段數；與 size_bytes 擇一")
-    size_bytes: int | None = Field(default=None, ge=0, description="檔案大小，供伺服器推算分段數")
+    size_bytes: int | None = Field(
+        default=None, ge=0, description="檔案大小（bytes）；主要輸入，供伺服器推算分段數並強制單檔上限"
+    )
+    part_count: int | None = Field(
+        default=None, ge=1, description="（已棄用）multipart 分段數；提供時覆蓋 size_bytes 推算"
+    )
 
 
 class UploadPart(BaseModel):
@@ -364,6 +408,9 @@ class RenderCreate(BaseModel):
     timeline_version: int | None = Field(
         default=None, description="省略則使用 latest_timeline_version"
     )
+    route: Literal["pipeline", "agent"] | None = Field(
+        default=None, description="創意路線（省略＝pipeline）"
+    )
 
 
 class RenderCreated(BaseModel):
@@ -379,6 +426,7 @@ class Render(BaseModel):
     render_id: str
     project_id: str
     status: RenderState
+    route: Literal["pipeline", "agent"] | None = None
     current_stage: str | None = None
     timeline_version: int
     effect_seed: int | None = None
@@ -397,6 +445,7 @@ class Artifact(BaseModel):
     artifact_id: str
     project_id: str
     render_id: str
+    route: Literal["pipeline", "agent"] | None = None
     timeline_version: int | None = None
     status: str
     duration_ms: int | None = None

@@ -28,8 +28,17 @@ import subprocess
 import tempfile
 from typing import TYPE_CHECKING, Any
 
+from composer.transitions import get_join_strategy
+from creative.effects_registry import EffectContext
+from workers.render.effects_apply import clip_effect_fragments
+from workers.render.subtitle_render import to_ass
+
 if TYPE_CHECKING:
     from workers.render_worker import EncodeInputs
+
+
+def _env_on(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _ffmpeg_bin() -> str:
@@ -187,6 +196,14 @@ class FFmpegEncoder:
         if not clips:
             raise ValueError("timeline has no clips to render")
 
+        # 降卡點：接點微淡（dip），總長不變、與 concat 相容（RENDER_JOIN 選策略，預設 micro_fade）。
+        join = get_join_strategy(os.environ.get("RENDER_JOIN"))
+        fade_s = join.fade_ms / 1000.0
+        # 特效套用（gated；預設關 → 離線/stub/既有測試不受影響）。
+        apply_effects = _env_on("RENDER_APPLY_EFFECTS")
+        effects_list: list[dict[str, Any]] = (inputs.effects or {}).get("effects", []) if apply_effects else []
+        fx_ctx = EffectContext(width=width, height=height, fps=fps)
+
         ff = _ffmpeg_bin()
         vf_norm = (
             f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
@@ -219,21 +236,42 @@ class FFmpegEncoder:
             # of decoding from 0. Effects (effects.v1) are injected here per clip, in
             # clip-local time, so they can target sub-segments within a highlight.
             seg_paths: list[str] = []
+            n = len(clips)
             for i, clip in enumerate(clips):
                 start = _sec(clip["source_start_ms"])
                 dur = max(0.05, _sec(clip["source_end_ms"]) - start)
-                extra = _clip_filters(inputs.effects, clip, width, height, seed)
-                vf = vf_norm + ("," + ",".join(extra) if extra else "")
+                # NOTE(edit-lane): edit 的 _clip_filters 保留於本檔，但活躍 encoder 統一走 main 的
+                # clip_effect_fragments（見下 vf_parts）；兩者皆渲染 effects.v1，避免雙重套用只用一套。
+                # 若 edit 特效語意與 main 有差，由 edit owner reconcile。
                 seg = os.path.join(workdir, f"seg{i:03d}.mp4")
-                _run([
+
+                vf_parts = [vf_norm]
+                af_parts: list[str] = []
+                # 接點微淡（第一刀不淡入、最後一刀不淡出）→ 柔化硬切、總長不變。
+                if fade_s > 0 and n > 1:
+                    out_st = max(0.0, dur - fade_s)
+                    if i > 0:
+                        vf_parts.append(f"fade=t=in:st=0:d={fade_s:.3f}")
+                        af_parts.append(f"afade=t=in:st=0:d={fade_s:.3f}")
+                    if i < n - 1:
+                        vf_parts.append(f"fade=t=out:st={out_st:.3f}:d={fade_s:.3f}")
+                        af_parts.append(f"afade=t=out:st={out_st:.3f}:d={fade_s:.3f}")
+                # 特效片段（gated；歸屬此 clip 的 zoom/flash 等）。
+                if effects_list:
+                    vf_parts.extend(clip_effect_fragments(clip, effects_list, fx_ctx))
+
+                cmd = [
                     ff, "-y", "-ss", f"{start:.3f}", "-i", source_path, "-t", f"{dur:.3f}",
                     "-map", "0:v:0", "-map", "0:a:0?",
-                    "-vf", vf,
+                    "-vf", ",".join(vf_parts),
                     "-c:v", "libx264", "-crf", str(crf), "-preset", "veryfast", "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
                     "-video_track_timescale", "90000",
-                    seg,
-                ])
+                ]
+                if af_parts:
+                    cmd += ["-af", ",".join(af_parts)]
+                cmd.append(seg)
+                _run(cmd)
                 seg_paths.append(seg)
 
             # Phase 2: concat the segments + burn subtitles + loudnorm + faststart → final.
@@ -243,15 +281,28 @@ class FFmpegEncoder:
                     fh.write(f"file '{seg.replace(os.sep, '/')}'\n")
             final_path = os.path.join(workdir, "final.mp4")
             subs_escaped = subs_path.replace("\\", "/").replace(":", "\\:")
-            subs_filter = f"subtitles='{subs_escaped}'"
-            # ASS needs a CJK font available to libass or zh-TW renders as tofu.
-            fonts_dir = os.environ.get("SUBTITLE_FONTS_DIR")
-            if inputs.subtitle_ass and fonts_dir:
-                fonts_escaped = fonts_dir.replace("\\", "/").replace(":", "\\:")
-                subs_filter += f":fontsdir='{fonts_escaped}'"
+            # 燒字幕：活躍 pipeline 走 main 的 subtitle.v1 → styled ASS（ass filter，與 main 行為相同，
+            # 不改活躍路徑）；缺 subtitle 時退回 edit 旁路的現成 ASS（subtitle_ass 已寫入 subs_path，
+            # +fontsdir 供 CJK 字型）；再退回 VTT。ASS 失敗永不中斷編碼。
+            sub_filter = f"subtitles='{subs_escaped}'"
+            if os.environ.get("SUBTITLE_STYLE_ENGINE", "ass").strip().lower() == "ass" and inputs.subtitle:
+                try:
+                    ass_path = os.path.join(workdir, "subs.ass")
+                    with open(ass_path, "w", encoding="utf-8") as fh:
+                        fh.write(to_ass(inputs.subtitle, width, height))
+                    ass_escaped = ass_path.replace("\\", "/").replace(":", "\\:")
+                    sub_filter = f"ass='{ass_escaped}'"
+                except Exception:  # noqa: BLE001 — ASS 失敗退回 VTT，永不中斷編碼
+                    sub_filter = f"subtitles='{subs_escaped}'"
+            elif inputs.subtitle_ass:
+                # edit 旁路（無 subtitle.v1 時）：subs_path 已是現成 ASS；補 fontsdir（否則 zh-TW tofu）。
+                fonts_dir = os.environ.get("SUBTITLE_FONTS_DIR")
+                if fonts_dir:
+                    fonts_escaped = fonts_dir.replace("\\", "/").replace(":", "\\:")
+                    sub_filter += f":fontsdir='{fonts_escaped}'"
             final_cmd = [
                 ff, "-y", "-f", "concat", "-safe", "0", "-i", concat_list,
-                "-vf", subs_filter,
+                "-vf", sub_filter,
             ]
             if normalize:
                 final_cmd += ["-af", "loudnorm"]

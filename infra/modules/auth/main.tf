@@ -26,6 +26,13 @@ resource "aws_cognito_user_pool" "editor" {
   # MVP: no MFA. Cognito-hosted email for verification (low volume, dev only).
   mfa_configuration = "OFF"
 
+  # Lock down: NO public self-signup — only admin-created users can exist. This
+  # prevents anonymous registration → token → abuse of the (billable) render
+  # pipeline. Provision the demo account with `aws cognito-idp admin-create-user`.
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
+
   account_recovery_setting {
     recovery_mechanism {
       name     = "verified_email"
@@ -38,6 +45,23 @@ resource "aws_cognito_user_pool" "editor" {
   }
 
   tags = merge(var.tags, { Purpose = "editor-auth" })
+}
+
+# Content-moderation review roles. Membership lands in the JWT ``cognito:groups``
+# claim, which app/auth.py reads into Principal.roles and require_moderator gates
+# the /moderation/override endpoint on. Add a user to a group with:
+#   aws cognito-idp admin-add-user-to-group --user-pool-id <id> \
+#       --username <email> --group-name moderator
+resource "aws_cognito_user_group" "moderator" {
+  name         = "moderator"
+  user_pool_id = aws_cognito_user_pool.editor.id
+  description  = "Can review/override content-moderation verdicts."
+}
+
+resource "aws_cognito_user_group" "admin" {
+  name         = "admin"
+  user_pool_id = aws_cognito_user_pool.editor.id
+  description  = "Administrators (superset of moderator)."
 }
 
 # Public SPA client — no secret (the browser cannot keep one). Uses SRP; no
