@@ -29,8 +29,9 @@ class _FakeStorage:
     def head_size(self, bucket: str, key: str) -> int:
         return self._size
 
-    def presigned_get(self, bucket: str, key: str) -> str:
-        return f"https://example/{bucket}/{key}"
+    def download_to_file(self, bucket: str, key: str, dest_path: str) -> None:
+        with open(dest_path, "wb") as fh:
+            fh.write(b"source-bytes")
 
     def upload_file(self, bucket, key, src_path, content_type=None) -> str:
         self.uploaded.append((bucket, key))

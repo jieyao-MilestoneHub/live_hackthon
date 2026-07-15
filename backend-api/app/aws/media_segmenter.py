@@ -11,9 +11,10 @@ SOLID / testability:
     objects in the work bucket (``SegmentInfo``), or ``[]`` when no split is needed.
   * ffmpeg exec and the duration probe are **injected** (``runner`` / ``probe``),
     so the planning + upload logic unit-tests with no ffmpeg binary and no AWS.
-  * The source is read by ffmpeg via an S3 **presigned GET URL** (HTTP range
-    seeks), so a multi-GB source is never fully downloaded to the Lambda; only
-    one-pass stream-copy segments land on ``/tmp``.
+  * The source is **downloaded to /tmp first**, then segmented from that local
+    file. Streaming ffmpeg's segment muxer from an S3 https URL segfaulted on the
+    static build; a seekable local file is the robust input. The Lambda's
+    ephemeral /tmp (10GB) holds the source + one-pass stream-copy segments.
 """
 from __future__ import annotations
 
@@ -129,22 +130,27 @@ class MediaSegmenter:
         if size <= max_bytes:
             return []
 
-        media_url = self._storage.presigned_get(bucket, key)
-        duration_ms = self._probe(self._ffmpeg, media_url)
         count = plan_segment_count(size, max_bytes)
-        segment_sec = max(1, min(segment_cap_sec, math.ceil((duration_ms / 1000) / count)))
-
         work_dir = tempfile.mkdtemp(prefix=f"seg-{project_id}-")
         try:
+            # Pull the source to a seekable local file first (streaming the
+            # segment muxer from an https URL segfaults on the static ffmpeg).
+            source_path = os.path.join(work_dir, "source.mp4")
+            self._storage.download_to_file(bucket, key, source_path)
+
+            duration_ms = self._probe(self._ffmpeg, source_path)
+            segment_sec = max(1, min(segment_cap_sec, math.ceil((duration_ms / 1000) / count)))
+
             csv_path = os.path.join(work_dir, "segments.csv")
             self._run([
-                self._ffmpeg, "-y", "-i", media_url,
+                self._ffmpeg, "-nostdin", "-y", "-i", source_path,
                 "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
                 "-f", "segment", "-segment_time", str(segment_sec),
                 "-reset_timestamps", "1",
                 "-segment_list", csv_path, "-segment_list_type", "csv",
                 os.path.join(work_dir, "seg_%03d.mp4"),
             ])
+            os.remove(source_path)  # free disk before uploading the segments
             return self._upload_segments(work_dir, csv_path, project_id)
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
