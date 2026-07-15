@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.state import ProjectState, RenderState
+from app.state import ModerationStatus, ProjectState, RenderState
 
 AnalysisSource = Literal["transcribe", "chat"]
 
@@ -96,10 +96,44 @@ class Project(BaseModel):
     latest_timeline_version: int | None = None
     latest_render_id: str | None = None
     latest_artifact_id: str | None = None
+    moderation_status: ModerationStatus | None = None
     created_at: str | None = None
     updated_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+
+
+class ModerationEvent(BaseModel):
+    """One moderation.v1 audit record (SCAN / REVIEW / OVERRIDE)."""
+
+    schema_version: Literal["moderation.v1"] = "moderation.v1"
+    moderation_id: str
+    project_id: str
+    status: ModerationStatus
+    action: Literal["SCAN", "REVIEW", "OVERRIDE"]
+    decided_by: str
+    decided_at: str
+    note: str | None = None
+    policy_version: str | None = None
+    visual: dict | None = None
+    text: dict | None = None
+    created_at: str | None = None
+
+
+class ModerationView(BaseModel):
+    """GET /projects/{id}/moderation response: current verdict + latest + audit trail."""
+
+    project_id: str
+    status: ModerationStatus
+    latest: ModerationEvent | None = None
+    events: list[ModerationEvent] = Field(default_factory=list)
+
+
+class ModerationOverrideRequest(BaseModel):
+    """POST /projects/{id}/moderation/override body (moderator-only)."""
+
+    decision: Literal["ALLOW", "BLOCK"]
+    note: str | None = None
 
 
 class UploadSessionCreate(BaseModel):

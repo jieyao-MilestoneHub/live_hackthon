@@ -58,6 +58,7 @@ module "backend_lambda" {
   # Batch upload: 6h presign + 10GB cap + 1024MB come from module defaults.
   # reserved_concurrency stays unreserved unless the demo knob is set (see var).
   reserved_concurrency = var.backend_reserved_concurrency
+  moderation_enabled   = var.moderation_enabled
 
   # When set, POST /renders StartExecutions the render workflow (async) instead
   # of running Creative Planning inline, and grants states:StartExecution.
@@ -86,6 +87,7 @@ module "analysis_workflow" {
   # Demo knob: set false to drop ~150 concurrent Bedrock converse calls off the
   # critical path (deterministic scorer still produces highlights).
   highlight_llm_enrich = var.highlight_llm_enrich
+  moderation_enabled   = var.moderation_enabled
 }
 
 module "analysis_ingress" {

@@ -108,6 +108,31 @@ export function isLoggedIn(): boolean {
   return !!getIdToken();
 }
 
+/** Decode a JWT payload without verifying the signature (display-only). */
+function decodeJwtPayload(token: string): Record<string, any> {
+  try {
+    const payload = token.split('.')[1];
+    const padded = payload.replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(padded));
+  } catch {
+    return {};
+  }
+}
+
+/** True if the logged-in user is in the Cognito ``moderator``/``admin`` group.
+ * Display-gating only — the backend re-checks the role on override. */
+export function isModerator(): boolean {
+  const token = getIdToken();
+  if (!token) return false;
+  const groups = decodeJwtPayload(token)['cognito:groups'];
+  const list: string[] = Array.isArray(groups)
+    ? groups
+    : typeof groups === 'string'
+      ? groups.split(',')
+      : [];
+  return list.map((g) => g.trim().toLowerCase()).some((g) => g === 'moderator' || g === 'admin');
+}
+
 /** Clear the stored token (both in-memory and sessionStorage). */
 export function logout(): void {
   inMemoryToken = null;

@@ -23,19 +23,30 @@ import json
 import logging
 import os
 import re
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
-from analysis import highlights_llm
+from analysis import highlights_llm, moderation_policy
 from analysis.chatlog import clean_chatlog
 from app.aws import factory, orchestration
 from app.aws.config import get_attribution_config
 from app.repository import get_repository
 from app.settings import get_settings
-from app.state import ProjectState, RenderState, advance_to_analyzing
+from app.state import (
+    ModerationStatus,
+    ProjectState,
+    RenderState,
+    advance_to_analyzing,
+    moderation_allows_publish,
+)
 from app.storage import get_storage
 from workers import analysis_worker, chat_analysis_worker, composer_worker, creative_worker
 
 log = logging.getLogger(__name__)
+
+# Cap transcript segments fed to the text moderator to bound Bedrock cost/latency.
+_MODERATION_TEXT_SEGMENT_CAP = 120
 
 # Raw key layout (demand.md §五/§十六): tenant={t}/project={p}/source/source.mp4
 _SOURCE_KEY_RE = re.compile(r"^tenant=(?P<tenant>[^/]+)/project=(?P<project>[^/]+)/source/")
@@ -80,6 +91,211 @@ def probe_metadata(event: dict[str, Any], context: Any = None) -> dict[str, Any]
     """Near-nop for the happy path: real ``source_duration_ms`` comes from the
     transcript. Kept as an explicit state for observability / future ffprobe."""
     return {"project_id": _project_id(event)}
+
+
+# --- Content moderation (§合規) --------------------------------------------
+
+def _moderation_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _collect_moderation_text(settings, project: dict[str, Any], project_id: str) -> list[dict[str, Any]]:
+    """Gather the user-facing / AI-generated text a moderation pass must scan:
+    transcript utterances + generated highlight titles/reasons (which get burned
+    into subtitles). Bounded to keep the Bedrock call cheap."""
+    tenant_id = project.get("tenant_id") or "unknown"
+    items: list[dict[str, Any]] = []
+    try:
+        transcript = get_storage().get_json(
+            settings.work_bucket, settings.transcript_key(tenant_id, project_id)
+        )
+        for seg in (transcript.get("segments") or [])[:_MODERATION_TEXT_SEGMENT_CAP]:
+            if seg.get("text"):
+                items.append({"source": "transcript", "text": seg["text"]})
+    except Exception:  # noqa: BLE001 — transcript may be absent (e.g. chat project)
+        log.info("moderation: no transcript to scan for %s", project_id)
+    for h in get_repository().list_highlights(project_id):
+        if h.get("suggested_title"):
+            items.append({"source": "highlight_title", "text": h["suggested_title"]})
+        if h.get("reason"):
+            items.append({"source": "highlight_reason", "text": h["reason"]})
+    return items
+
+
+def _persist_moderation(
+    project_id: str,
+    tenant_id: str,
+    status: str,
+    *,
+    action: str,
+    decided_by: str,
+    visual: dict[str, Any] | None = None,
+    text: dict[str, Any] | None = None,
+    policy_version: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Write an immutable moderation.v1 audit event + the latest result doc, and
+    set the project's mutable ``moderation_status``. Returns the event."""
+    settings = get_settings()
+    now = _moderation_now()
+    event = {
+        "schema_version": "moderation.v1",
+        "moderation_id": f"mod-{uuid.uuid4().hex[:12]}",
+        "project_id": project_id,
+        "status": status,
+        "action": action,
+        "decided_by": decided_by,
+        "decided_at": now,
+        "note": note,
+        "policy_version": policy_version,
+        "visual": visual,
+        "text": text,
+        "created_at": now,
+    }
+    repo = get_repository()
+    repo.put_moderation_event(project_id, event)
+    try:
+        get_storage().put_json(
+            settings.work_bucket, settings.moderation_key(tenant_id, project_id), event
+        )
+    except Exception:  # noqa: BLE001 — audit item in Dynamo is the source of truth
+        log.warning("moderation: failed to persist result doc for %s", project_id)
+    repo.update_project(project_id, {"moderation_status": status})
+    return event
+
+
+def start_moderation(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    """Step Functions 'StartModeration' task: kick the async Rekognition visual
+    scan on the source video and return immediately. Runs right after
+    ValidateSource so it overlaps transcription (no added wall-clock). No-op when
+    moderation is disabled."""
+    settings = get_settings()
+    project_id = _project_id(event)
+    if not settings.moderation_enabled:
+        return {"project_id": project_id, "status": "SKIPPED"}
+    config = get_attribution_config()
+    project = _require_project(project_id)
+    bucket = project.get("source_bucket") or settings.raw_bucket
+    key = project.get("source_key")
+    media_uri = f"s3://{bucket}/{key}"
+    try:
+        job_id = factory.get_visual_moderation().start_visual_moderation(
+            project_id, media_uri, min_confidence=config.moderation_min_confidence
+        )
+        get_repository().update_project(project_id, {"moderation_job_id": job_id})
+    except Exception:  # noqa: BLE001 — visual scan is best-effort; text scan still runs at the gate
+        log.exception("moderation: start_visual_moderation failed for %s", project_id)
+        get_repository().update_project(project_id, {"moderation_job_id": None})
+    return {"project_id": project_id, "status": "STARTED"}
+
+
+def moderation_decision(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    """Step Functions 'ModerationDecision' task (after DetectHighlights, before
+    Compose): poll the visual scan, run the zh-TW text scan over transcript +
+    AI-generated highlight copy, apply the tiered policy, persist an immutable
+    audit record + moderation_status, and return the verdict for the Choice.
+
+    Returns status ∈ PENDING (visual not ready → Wait loop) / ALLOWED / FLAGGED /
+    BLOCKED."""
+    settings = get_settings()
+    project_id = _project_id(event)
+    project = _require_project(project_id)
+    tenant_id = project.get("tenant_id") or "unknown"
+
+    if not settings.moderation_enabled:
+        _persist_moderation(
+            project_id, tenant_id, ModerationStatus.ALLOWED.value,
+            action="SCAN", decided_by="system", note="moderation disabled",
+        )
+        return {"project_id": project_id, "status": ModerationStatus.ALLOWED.value}
+
+    config = get_attribution_config()
+
+    # 1) Visual: poll the async Rekognition job started earlier.
+    job_id = project.get("moderation_job_id")
+    if job_id:
+        visual = factory.get_visual_moderation().poll_visual_moderation(job_id)
+    else:
+        visual = {"status": "SKIPPED", "labels": []}
+    if visual["status"] == "IN_PROGRESS":
+        return {"project_id": project_id, "status": "PENDING"}  # → Wait → re-poll
+    visual_labels = visual.get("labels", [])
+
+    # 2) Text: zh-TW classify transcript + AI-generated highlight copy (Bedrock).
+    text_findings: list[dict[str, Any]] = []
+    text_error = False
+    text_items = _collect_moderation_text(settings, project, project_id)
+    if text_items:
+        try:
+            text_findings = factory.get_text_moderation().moderate_text(text_items)
+        except Exception:  # noqa: BLE001 — do not fail the pipeline on a Bedrock error
+            log.exception("moderation: text scan failed for %s", project_id)
+            text_error = True
+
+    # 3) Tiered decision (pure policy).
+    decision = moderation_policy.decide(
+        visual_labels, text_findings,
+        flag_threshold=config.moderation_flag_threshold,
+        block_threshold=config.moderation_block_threshold,
+    )
+    status = decision["status"]
+    note = None
+    # Fail-safe: if the text scan errored and nothing else flagged it, escalate to
+    # FLAGGED (needs human review) rather than silently ALLOWED.
+    if text_error and status == ModerationStatus.ALLOWED.value:
+        status = ModerationStatus.FLAGGED.value
+        note = "text scan unavailable; flagged for manual review"
+
+    _persist_moderation(
+        project_id, tenant_id, status,
+        action="SCAN", decided_by="system", policy_version=decision["policy_version"], note=note,
+        visual={"provider": "rekognition", "job_status": visual["status"], "labels": visual_labels},
+        text={"provider": "bedrock", "model_id": config.moderation_model_id, "findings": text_findings},
+    )
+    return {"project_id": project_id, "status": status}
+
+
+def _moderate_chat_text(project_id: str, tenant_id: str, messages: list[dict[str, Any]]) -> str:
+    """Inline zh-TW text moderation for the chat path (chat_starter bypasses the
+    analysis SFN). Persists an audit event + moderation_status; returns the status.
+    No-op → ALLOWED when moderation is disabled."""
+    settings = get_settings()
+    if not settings.moderation_enabled:
+        _persist_moderation(
+            project_id, tenant_id, ModerationStatus.ALLOWED.value,
+            action="SCAN", decided_by="system", note="moderation disabled",
+        )
+        return ModerationStatus.ALLOWED.value
+    config = get_attribution_config()
+    items = [
+        {"source": "chat", "text": m["text"]}
+        for m in messages[:_MODERATION_TEXT_SEGMENT_CAP]
+        if m.get("text")
+    ]
+    findings: list[dict[str, Any]] = []
+    text_error = False
+    if items:
+        try:
+            findings = factory.get_text_moderation().moderate_text(items)
+        except Exception:  # noqa: BLE001
+            log.exception("moderation: chat text scan failed for %s", project_id)
+            text_error = True
+    decision = moderation_policy.decide(
+        [], findings,
+        flag_threshold=config.moderation_flag_threshold,
+        block_threshold=config.moderation_block_threshold,
+    )
+    status = decision["status"]
+    note = None
+    if text_error and status == ModerationStatus.ALLOWED.value:
+        status = ModerationStatus.FLAGGED.value
+        note = "text scan unavailable; flagged for manual review"
+    _persist_moderation(
+        project_id, tenant_id, status,
+        action="SCAN", decided_by="system", policy_version=decision["policy_version"], note=note,
+        text={"provider": "bedrock", "model_id": config.moderation_model_id, "findings": findings},
+    )
+    return status
 
 
 def transcribe(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
@@ -180,6 +396,27 @@ def compose_timeline(event: dict[str, Any], context: Any = None) -> dict[str, An
 def mark_ready(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
     """Explicit terminal (composer already set READY_TO_EDIT) for observability."""
     return {"project_id": _project_id(event), "status": ProjectState.READY_TO_EDIT.value}
+
+
+def mark_blocked(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
+    """Step Functions terminal for a moderation BLOCK: stop the pipeline before
+    compose/render. moderation_status=BLOCKED was already set by moderation_decision;
+    here we move the lifecycle to a terminal state (reusing FAILED with a distinct
+    error_code, so no transition-graph change) so the frontend stops polling."""
+    project_id = event.get("project_id")
+    if project_id:
+        try:
+            get_repository().update_project(
+                project_id,
+                {
+                    "status": ProjectState.FAILED.value,
+                    "error_code": "MODERATION_BLOCKED",
+                    "error_message": "內容審核未通過（已封鎖）",
+                },
+            )
+        except KeyError:
+            pass
+    return {"project_id": project_id, "status": ModerationStatus.BLOCKED.value}
 
 
 def mark_failed(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
@@ -369,6 +606,19 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             continue
         storage.put_json(settings.work_bucket, settings.chatlog_key(tenant_id, project_id), chatlog)
 
+        # 1b) content moderation (text) — chat runs inline (no analysis SFN), so
+        # scan chat messages here. BLOCKED stops the pipeline before analysis.
+        mod_status = _moderate_chat_text(project_id, tenant_id, chatlog["messages"])
+        if mod_status == ModerationStatus.BLOCKED.value:
+            repo.update_project(project_id, {
+                "status": ProjectState.FAILED.value,
+                "error_code": "MODERATION_BLOCKED",
+                "error_message": "內容審核未通過（已封鎖）",
+            })
+            log.info("chat_starter: project %s blocked by moderation; skip", project_id)
+            started.append({"project_id": project_id, "status": ModerationStatus.BLOCKED.value})
+            continue
+
         # 2) analyze → COMPOSING (chat-relative timebase; no video probe in auto mode)
         advance_to_analyzing(repo, project_id, ProjectState(repo.get_project(project_id)["status"]))
         result = chat_analysis_worker.run(repo, project_id, chatlog)
@@ -381,13 +631,24 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             timeline,
         )
 
-        # 4) render: create record + StartExecution on the render workflow
-        render = creative_worker.create_render_record(repo, project_id, timeline["version"])
-        exec_arn = orchestration.start_render(render["render_id"], project_id, timeline["version"])
-        started.append({
-            "project_id": project_id,
-            "render_id": render["render_id"],
-            "execution_arn": exec_arn,
-            "highlight_count": len(result["highlights"]),
-        })
+        # 4) render: only auto-render when moderation permits publishing. A FLAGGED
+        # chat project composes (editable) but waits for a moderator override before
+        # it can render/download.
+        if moderation_allows_publish(mod_status):
+            render = creative_worker.create_render_record(repo, project_id, timeline["version"])
+            exec_arn = orchestration.start_render(render["render_id"], project_id, timeline["version"])
+            started.append({
+                "project_id": project_id,
+                "render_id": render["render_id"],
+                "execution_arn": exec_arn,
+                "highlight_count": len(result["highlights"]),
+            })
+        else:
+            log.info("chat_starter: project %s moderation=%s; composed, awaiting review before render",
+                     project_id, mod_status)
+            started.append({
+                "project_id": project_id,
+                "status": mod_status,
+                "highlight_count": len(result["highlights"]),
+            })
     return {"started": started}

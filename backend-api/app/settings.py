@@ -34,6 +34,9 @@ class Settings:
     # Defaulted so tests/helpers that construct Settings() directly keep working.
     max_upload_bytes: int = 10 * 1024**3
     max_batch_files: int = 20
+    # Content moderation feature flag. When False the publish gates are skipped
+    # (pre-moderation projects / disabled deployments are never blocked).
+    moderation_enabled: bool = True
 
     def source_key(self, tenant_id: str, project_id: str, filename: str = "source.mp4") -> str:
         """Raw-bucket object key per demand.md §十六."""
@@ -56,6 +59,10 @@ class Settings:
     def annotations_key(self, tenant_id: str, project_id: str) -> str:
         """Work-bucket key for the structured annotations.v1 (5 維度標註 + 敘事節拍)."""
         return f"{self._project_prefix(tenant_id, project_id)}/annotations/annotations.json"
+
+    def moderation_key(self, tenant_id: str, project_id: str) -> str:
+        """Work-bucket key for the moderation.v1 result doc (findings detail)."""
+        return f"{self._project_prefix(tenant_id, project_id)}/moderation/moderation.json"
 
     def timeline_key(self, tenant_id: str, project_id: str, version: int) -> str:
         """Work-bucket key for a timeline version (§十六)."""
@@ -92,4 +99,5 @@ def get_settings() -> Settings:
         # Per-file upload cap (default 10GB) and per-batch file-count cap (default 20).
         max_upload_bytes=int(os.environ.get("MAX_UPLOAD_BYTES", str(10 * 1024**3))),
         max_batch_files=int(os.environ.get("MAX_BATCH_FILES", "20")),
+        moderation_enabled=_env_bool("MODERATION_ENABLED", default=True),
     )

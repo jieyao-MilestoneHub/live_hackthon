@@ -66,3 +66,9 @@ variable "highlight_llm_enrich" {
   default     = true
   description = "Bedrock title/reason enrichment for top highlights. Set false for the demo to drop ~150 concurrent converse calls off the critical path (the deterministic scorer still produces highlights)."
 }
+
+variable "moderation_enabled" {
+  type        = bool
+  default     = true
+  description = "Content moderation (visual Rekognition + text Bedrock) + render/download gate. SCP: Rekognition content moderation is a NEW deployed-IAM surface — probe create→delete before relying on it (CLAUDE.md). Set false if Rekognition/Bedrock moderation isn't granted, so the pipeline marks ALLOWED and never gates."
+}

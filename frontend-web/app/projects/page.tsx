@@ -19,7 +19,12 @@ import {
   uploadChatCsv,
   uploadToS3,
 } from '@/lib/api';
-import { formatMs, msToSecondsLabel, projectPhase } from '@/lib/format';
+import {
+  formatMs,
+  moderationAllowsPublish,
+  msToSecondsLabel,
+  projectPhase,
+} from '@/lib/format';
 import {
   EDITABLE_STATES,
   POLLABLE_PROJECT_STATES,
@@ -30,6 +35,7 @@ import type {
   AspectRatio,
   ComposeRequest,
   Highlight,
+  ModerationStatus,
   Project,
   Render,
   RenderCreated,
@@ -38,6 +44,7 @@ import type {
 } from '@/types';
 import StatusPill from '@/components/StatusPill';
 import StageRail from '@/components/StageRail';
+import ModerationBanner from '@/components/ModerationBanner';
 import ScoreMeter from '@/components/ScoreMeter';
 import HighlightWave from '@/components/HighlightWave';
 
@@ -408,6 +415,10 @@ function EditorRegions({
   const renderActive = !!render && !RENDER_TERMINAL_STATES.has(render.status);
   const renderDone =
     render?.status === 'SUCCEEDED' || project.status === 'ARTIFACT_READY';
+  // Mirror the backend gate: a set-but-not-publishable verdict locks render/download.
+  // (undefined = moderation off / pre-moderation project → not gated.)
+  const publishGated =
+    !!project.moderation_status && !moderationAllowsPublish(project.moderation_status);
 
   async function handleDownload() {
     if (!artifactId) {
@@ -662,21 +673,24 @@ function EditorRegions({
               {saving ? '儲存中…' : 'Save Draft'}
             </button>
             {renderDone && artifactId ? (
-              <button className="btn" onClick={handleDownload} disabled={downloading}>
+              <button className="btn" onClick={handleDownload} disabled={downloading || publishGated}>
                 {downloading ? '取得連結…' : '下載成品 ⬇'}
               </button>
             ) : (
               <button
                 className="btn"
                 onClick={handleRender}
-                disabled={renderActive || saving || recomposing || clips.length === 0}
-                title="凍結目前版本並提交渲染"
+                disabled={renderActive || saving || recomposing || clips.length === 0 || publishGated}
+                title={publishGated ? '內容審核未通過，無法渲染' : '凍結目前版本並提交渲染'}
               >
                 {renderActive ? '渲染中…' : 'Render Video ▸'}
               </button>
             )}
           </div>
         </div>
+        {publishGated && (
+          <p className="hint">內容審核未通過，渲染／下載已鎖定，需管理員複核放行。</p>
+        )}
 
         {saveMsg && <p className="note-ok">{saveMsg}</p>}
         {render && (
@@ -842,10 +856,18 @@ function ProjectView() {
         {project && <StageRail status={project.status} />}
         {!project && !error && <p className="hint">載入中…</p>}
         {error && <p className="error">{error}</p>}
-        {project?.status === 'FAILED' && (
+        {project?.status === 'FAILED' && project.error_code !== 'MODERATION_BLOCKED' && (
           <p className="error">
             分析失敗，請重新上傳影片。{project.error_code} {project.error_message}
           </p>
+        )}
+        {project && (
+          <ModerationBanner
+            project={project}
+            onOverridden={(s: ModerationStatus) =>
+              setProject((p) => (p ? { ...p, moderation_status: s } : p))
+            }
+          />
         )}
       </div>
 

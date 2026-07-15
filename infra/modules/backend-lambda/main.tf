@@ -132,6 +132,7 @@ resource "aws_lambda_function" "backend" {
       PRESIGN_EXPIRY_SEC       = tostring(var.presign_expiry_sec)
       MAX_UPLOAD_BYTES         = tostring(var.max_upload_bytes)
       MAX_BATCH_FILES          = tostring(var.max_batch_files)
+      MODERATION_ENABLED       = var.moderation_enabled ? "1" : "0"
       RENDER_STATE_MACHINE_ARN = var.render_state_machine_arn
     }
   }

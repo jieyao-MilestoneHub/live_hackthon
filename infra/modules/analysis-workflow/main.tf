@@ -12,14 +12,17 @@ locals {
   # the job, then Step Functions Waits + polls), so neither needs the old 15-min
   # timeout or a held concurrency slot.
   workers = {
-    validate_source    = { timeout = 60, memory = 256 }
-    probe_metadata     = { timeout = 60, memory = 256 }
-    transcribe         = { timeout = 60, memory = 512 }
-    poll_transcription = { timeout = 60, memory = 512 }
-    detect_highlights  = { timeout = 300, memory = 512 }
-    compose_timeline   = { timeout = 120, memory = 512 }
-    mark_ready         = { timeout = 30, memory = 256 }
-    mark_failed        = { timeout = 30, memory = 256 }
+    validate_source     = { timeout = 60, memory = 256 }
+    probe_metadata      = { timeout = 60, memory = 256 }
+    start_moderation    = { timeout = 60, memory = 256 }
+    transcribe          = { timeout = 60, memory = 512 }
+    poll_transcription  = { timeout = 60, memory = 512 }
+    detect_highlights   = { timeout = 300, memory = 512 }
+    moderation_decision = { timeout = 120, memory = 512 }
+    compose_timeline    = { timeout = 120, memory = 512 }
+    mark_ready          = { timeout = 30, memory = 256 }
+    mark_blocked        = { timeout = 30, memory = 256 }
+    mark_failed         = { timeout = 30, memory = 256 }
   }
 
   worker_env = {
@@ -30,6 +33,7 @@ locals {
     WORK_BUCKET          = var.work_bucket
     OUTPUT_BUCKET        = var.output_bucket
     HIGHLIGHT_LLM_ENRICH = var.highlight_llm_enrich ? "1" : "0"
+    MODERATION_ENABLED   = var.moderation_enabled ? "1" : "0"
   }
 }
 
@@ -82,6 +86,14 @@ data "aws_iam_policy_document" "worker" {
   statement {
     sid       = "Transcribe"
     actions   = ["transcribe:StartTranscriptionJob", "transcribe:GetTranscriptionJob"]
+    resources = ["*"]
+  }
+
+  # Rekognition video content moderation (start_moderation / moderation_decision).
+  # No resource-level permissions on these APIs.
+  statement {
+    sid       = "RekognitionModeration"
+    actions   = ["rekognition:StartContentModeration", "rekognition:GetContentModeration"]
     resources = ["*"]
   }
 
@@ -185,6 +197,17 @@ locals {
         ResultPath = null
         Retry      = local.retry
         Catch      = local.catch
+        Next       = "StartModeration"
+      }
+      # Kick the async Rekognition visual scan now so it overlaps transcription
+      # (no added wall-clock); the verdict is made later at ModerationDecision.
+      StartModeration = {
+        Type       = "Task"
+        Resource   = "arn:aws:states:::lambda:invoke"
+        Parameters = { FunctionName = aws_lambda_function.worker["start_moderation"].arn, "Payload.$" = "$" }
+        ResultPath = null
+        Retry      = local.retry
+        Catch      = local.catch
         Next       = "ProbeVideoMetadata"
       }
       ProbeVideoMetadata = {
@@ -246,7 +269,50 @@ locals {
         ResultPath = null
         Retry      = local.retry
         Catch      = local.catch
-        Next       = "ComposeInitialTimeline"
+        Next       = "ModerationDecision"
+      }
+      # Content-moderation gate: poll the visual scan + run the zh-TW text scan
+      # over transcript + AI-generated highlight copy → tiered verdict. Runs after
+      # DetectHighlights so the AI titles/reasons (which get burned into subtitles)
+      # are available to scan.
+      ModerationDecision = {
+        Type       = "Task"
+        Resource   = "arn:aws:states:::lambda:invoke"
+        Parameters = { FunctionName = aws_lambda_function.worker["moderation_decision"].arn, "Payload.$" = "$" }
+        ResultPath = "$.moderation"
+        Retry      = local.retry
+        Catch      = local.catch
+        Next       = "ModerationGate"
+      }
+      ModerationGate = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.moderation.Payload.status"
+            StringEquals = "PENDING"
+            Next         = "WaitForModeration"
+          },
+          {
+            Variable     = "$.moderation.Payload.status"
+            StringEquals = "BLOCKED"
+            Next         = "MarkBlocked"
+          },
+        ]
+        # ALLOWED / FLAGGED both continue (FLAGGED is editable but publish is
+        # gated at the render/download API until a moderator override).
+        Default = "ComposeInitialTimeline"
+      }
+      WaitForModeration = {
+        Type    = "Wait"
+        Seconds = var.transcribe_poll_wait_sec
+        Next    = "ModerationDecision"
+      }
+      MarkBlocked = {
+        Type       = "Task"
+        Resource   = "arn:aws:states:::lambda:invoke"
+        Parameters = { FunctionName = aws_lambda_function.worker["mark_blocked"].arn, "Payload.$" = "$" }
+        ResultPath = null
+        End        = true
       }
       ComposeInitialTimeline = {
         Type       = "Task"

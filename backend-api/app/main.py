@@ -21,7 +21,7 @@ from jsonschema import ValidationError
 from analysis.chatlog import clean_chatlog
 from analysis.chatlog.correction import apply_correction, creation_time_to_epoch_ms
 from analysis.validate import validate_annotations, validate_highlights, validate_timeline
-from app.auth import Principal, current_principal
+from app.auth import Principal, current_principal, require_moderator
 from app.aws import orchestration
 from app.repository import ProjectRepository, get_repository
 from app.schemas import (
@@ -34,6 +34,9 @@ from app.schemas import (
     Highlight,
     HighlightList,
     HighlightPatch,
+    ModerationEvent,
+    ModerationOverrideRequest,
+    ModerationView,
     Project,
     ProjectCreate,
     ProjectCreated,
@@ -50,9 +53,11 @@ from app.schemas import (
 from app.settings import get_settings
 from app.state import (
     InvalidTransition,
+    ModerationStatus,
     ProjectState,
     advance_to_analyzing,
     assert_project_transition,
+    moderation_allows_publish,
 )
 from app.storage import Storage, get_storage, resolve_part_count
 from workers import annotation_worker, chat_analysis_worker, composer_worker, creative_worker
@@ -93,6 +98,34 @@ def _is_allowed_video(content_type: str | None, filename: str | None) -> bool:
         name = filename.strip().lower()
         return any(name.endswith(ext) for ext in _ALLOWED_VIDEO_EXTS)
     return False
+
+
+# Lifecycle states a project can be rendered from (mirrors _PROJECT_TRANSITIONS).
+_RENDERABLE_STATES = {ProjectState.READY_TO_EDIT, ProjectState.ARTIFACT_READY}
+
+
+def _assert_publishable(project: dict) -> None:
+    """403 unless content moderation permits publishing (render/download). No-op
+    when moderation is disabled (feature flag off / pre-moderation projects)."""
+    if not get_settings().moderation_enabled:
+        return
+    status = project.get("moderation_status")
+    if not moderation_allows_publish(status):
+        raise HTTPException(
+            status_code=403,
+            detail=f"內容審核（{status or 'PENDING'}）尚未通過，不可發布；需管理員複核",
+        )
+
+
+def _moderation_view(project: dict, repo: ProjectRepository) -> ModerationView:
+    events = [ModerationEvent(**e) for e in repo.list_moderation_events(project["project_id"])]
+    status = project.get("moderation_status") or ModerationStatus.PENDING.value
+    return ModerationView(
+        project_id=project["project_id"],
+        status=status,
+        latest=events[-1] if events else None,
+        events=events,
+    )
 
 
 @app.get("/health")
@@ -568,8 +601,14 @@ def create_render(
     # workflow is deployed (RENDER_STATE_MACHINE_ARN set), just create the render
     # record and StartExecution — creative planning + Batch encode run async.
     # Offline / no state machine falls back to the inline shim so tests + CLI work.
-    if repo.get_project(id) is None:
+    project = repo.get_project(id)
+    if project is None:
         raise HTTPException(status_code=404, detail="project not found")
+    # Moderation gate only for projects that are otherwise renderable — a not-ready
+    # project falls through to the worker's 409 readiness error (more precise than
+    # a moderation 403 for a project that was never scanned).
+    if ProjectState(project["status"]) in _RENDERABLE_STATES:
+        _assert_publishable(project)  # no render for BLOCKED / unreviewed-FLAGGED
     req = body or RenderCreate()
     try:
         if os.environ.get("RENDER_STATE_MACHINE_ARN"):
@@ -604,9 +643,59 @@ def get_artifact_download_url(
     artifact = repo.get_artifact_by_id(artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="artifact not found")
+    # Defense in depth: an artifact may have been rendered before a later block /
+    # takedown — re-check the owning project's moderation verdict before signing.
+    owner = repo.get_project(artifact.get("project_id")) if artifact.get("project_id") else None
+    if owner is not None:
+        _assert_publishable(owner)
     settings = get_settings()
     url = storage.presigned_get(settings.output_bucket, artifact["video_key"])
     return DownloadUrl(url=url, expires_in_sec=settings.presign_expiry_sec)
+
+
+@app.get("/projects/{id}/moderation", response_model=ModerationView)
+def get_moderation(
+    id: str,
+    repo: ProjectRepository = Depends(get_repository),
+) -> ModerationView:
+    """Current moderation verdict + immutable audit trail (SCAN/REVIEW/OVERRIDE)."""
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return _moderation_view(project, repo)
+
+
+@app.post("/projects/{id}/moderation/override", response_model=ModerationView)
+def override_moderation(
+    id: str,
+    body: ModerationOverrideRequest,
+    principal: Principal = Depends(require_moderator),
+    repo: ProjectRepository = Depends(get_repository),
+) -> ModerationView:
+    """Moderator review/override. ALLOW → OVERRIDDEN (publishable); BLOCK → BLOCKED.
+    Appends an immutable moderation.v1 audit record stamped with the moderator."""
+    project = repo.get_project(id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    new_status = (
+        ModerationStatus.OVERRIDDEN.value if body.decision == "ALLOW"
+        else ModerationStatus.BLOCKED.value
+    )
+    now = _now_iso()
+    event = {
+        "schema_version": "moderation.v1",
+        "moderation_id": f"mod-{uuid.uuid4().hex[:12]}",
+        "project_id": id,
+        "status": new_status,
+        "action": "OVERRIDE",
+        "decided_by": principal.user_id,
+        "decided_at": now,
+        "note": body.note,
+        "created_at": now,
+    }
+    repo.put_moderation_event(id, event)
+    updated = repo.update_project(id, {"moderation_status": new_status})
+    return _moderation_view(updated, repo)
 
 
 # --- Speaker Attribution feature (mounted) ---------------------------------

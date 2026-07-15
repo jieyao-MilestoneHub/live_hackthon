@@ -40,7 +40,14 @@ def _timeline_sk(version: int) -> str:
 
 _RENDER_SK_PREFIX = "RENDER#"
 _ARTIFACT_SK_PREFIX = "ARTIFACT#"
+_MODERATION_SK_PREFIX = "MODERATION#"
 _POINTER_SK = "POINTER"
+
+
+def _moderation_sk(event: dict[str, Any]) -> str:
+    """Time-ordered, unique SK so a Query returns the audit trail chronologically
+    and a conditional-put never collides (immutability)."""
+    return f"{_MODERATION_SK_PREFIX}{event.get('decided_at', '')}#{event['moderation_id']}"
 
 
 def _render_pk(render_id: str) -> str:
@@ -138,6 +145,19 @@ class ProjectRepository(abc.ABC):
     def get_artifact_by_id(self, artifact_id: str) -> dict[str, Any] | None:
         """Resolve an artifact_id (via pointer) to its Artifact item, or ``None``."""
 
+    @abc.abstractmethod
+    def put_moderation_event(self, project_id: str, event: dict[str, Any]) -> None:
+        """Append an IMMUTABLE moderation audit record (SK ``MODERATION#{ts}#{id}``).
+
+        Compliance requirement: existing records are never overwritten. ``event``
+        must contain ``moderation_id`` + ``decided_at``. The Project's mutable
+        ``moderation_status`` field is set separately via ``update_project``.
+        """
+
+    @abc.abstractmethod
+    def list_moderation_events(self, project_id: str) -> list[dict[str, Any]]:
+        """Return the project's moderation audit trail, oldest→newest (empty if none)."""
+
 
 class InMemoryProjectRepository(ProjectRepository):
     """Process-local store for offline dev / tests."""
@@ -150,6 +170,7 @@ class InMemoryProjectRepository(ProjectRepository):
         self._render_pointers: dict[str, str] = {}
         self._artifacts: dict[tuple[str, str], dict[str, Any]] = {}
         self._artifact_pointers: dict[str, str] = {}
+        self._moderation: dict[str, list[dict[str, Any]]] = {}
 
     def create_project(self, item: dict[str, Any]) -> dict[str, Any]:
         project_id = item["project_id"]
@@ -244,6 +265,13 @@ class InMemoryProjectRepository(ProjectRepository):
     def get_artifact_by_id(self, artifact_id: str) -> dict[str, Any] | None:
         project_id = self._artifact_pointers.get(artifact_id)
         return self.get_artifact(project_id, artifact_id) if project_id else None
+
+    def put_moderation_event(self, project_id: str, event: dict[str, Any]) -> None:
+        self._moderation.setdefault(project_id, []).append(copy.deepcopy(event))
+
+    def list_moderation_events(self, project_id: str) -> list[dict[str, Any]]:
+        events = self._moderation.get(project_id, [])
+        return copy.deepcopy(sorted(events, key=lambda e: e.get("decided_at", "")))
 
 
 def _coerce_numbers(value: Any) -> Any:
@@ -512,6 +540,38 @@ class DynamoProjectRepository(ProjectRepository):
         if not pointer:
             return None
         return self.get_artifact(pointer["project_id"], artifact_id)
+
+    def put_moderation_event(self, project_id: str, event: dict[str, Any]) -> None:
+        from botocore.exceptions import ClientError
+
+        record = {
+            _PK: _project_pk(project_id),
+            _SK: _moderation_sk(event),
+            **{k: v for k, v in event.items() if v is not None},
+        }
+        try:
+            # attribute_not_exists ⇒ never overwrite an existing audit record (immutable).
+            self._table.put_item(
+                Item=_to_dynamo(record),
+                ConditionExpression="attribute_not_exists(#pk)",
+                ExpressionAttributeNames={"#pk": _PK},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise KeyError(
+                    f"moderation event {event.get('moderation_id')} already exists for {project_id}"
+                ) from exc
+            raise
+
+    def list_moderation_events(self, project_id: str) -> list[dict[str, Any]]:
+        from boto3.dynamodb.conditions import Key
+
+        resp = self._table.query(
+            KeyConditionExpression=Key(_PK).eq(_project_pk(project_id))
+            & Key(_SK).begins_with(_MODERATION_SK_PREFIX),
+        )
+        # SK is time-prefixed, so Query already returns oldest→newest.
+        return [self._strip_keys(it) for it in resp.get("Items", [])]
 
 
 @lru_cache(maxsize=1)

@@ -95,6 +95,12 @@ variable "max_batch_files" {
   description = "Advisory per-batch file-count cap (enforced client-side; exposed for parity)."
 }
 
+variable "moderation_enabled" {
+  type        = bool
+  default     = true
+  description = "Content-moderation feature flag. Gates render/download on the moderation verdict. Set false if Rekognition/Bedrock moderation isn't granted in the account."
+}
+
 variable "render_state_machine_arn" {
   type        = string
   default     = ""

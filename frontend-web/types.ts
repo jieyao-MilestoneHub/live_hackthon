@@ -34,6 +34,33 @@ export type AspectRatio = '16:9' | '9:16' | '1:1';
 /** Highlight analysis source (openapi: ProjectCreate.analysis_source). */
 export type AnalysisSource = 'transcribe' | 'chat';
 
+/** Content-moderation verdict (openapi: ModerationStatus). Orthogonal to ProjectState. */
+export type ModerationStatus = 'PENDING' | 'ALLOWED' | 'FLAGGED' | 'BLOCKED' | 'OVERRIDDEN';
+
+/** One moderation audit record (openapi: Moderation / moderation.v1). */
+export interface ModerationEvent {
+  schema_version: 'moderation.v1';
+  moderation_id: string;
+  project_id: string;
+  status: ModerationStatus;
+  action: 'SCAN' | 'REVIEW' | 'OVERRIDE';
+  decided_by: string;
+  decided_at: string;
+  note?: string;
+  policy_version?: string;
+  visual?: Record<string, unknown>;
+  text?: Record<string, unknown>;
+  created_at?: string;
+}
+
+/** GET /projects/{id}/moderation response (openapi: ModerationView). */
+export interface ModerationView {
+  project_id: string;
+  status: ModerationStatus;
+  latest?: ModerationEvent | null;
+  events: ModerationEvent[];
+}
+
 /** Request body for POST /projects (openapi: ProjectCreate). */
 export interface ProjectCreate {
   title?: string;
@@ -70,6 +97,7 @@ export interface Project {
   latest_timeline_version?: number;
   latest_render_id?: string;
   latest_artifact_id?: string;
+  moderation_status?: ModerationStatus;
   created_at?: string;
   updated_at?: string;
   error_code?: string;

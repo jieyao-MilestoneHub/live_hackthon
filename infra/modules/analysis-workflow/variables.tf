@@ -56,6 +56,12 @@ variable "highlight_llm_enrich" {
   description = "Turn on real Bedrock title/reason enrichment in detect_highlights (fail-open if Bedrock model access is not granted)."
 }
 
+variable "moderation_enabled" {
+  type        = bool
+  default     = true
+  description = "Run the content-moderation states (visual Rekognition + text Bedrock). Set false if those services aren't granted in the account (workers then mark ALLOWED and never block)."
+}
+
 variable "transcribe_poll_wait_sec" {
   type        = number
   default     = 30

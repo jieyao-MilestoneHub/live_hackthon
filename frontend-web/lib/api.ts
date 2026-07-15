@@ -14,6 +14,7 @@ import type {
   ComposeRequest,
   DownloadUrl,
   HighlightList,
+  ModerationView,
   Project,
   ProjectCreate,
   ProjectCreated,
@@ -411,6 +412,30 @@ export async function getProject(projectId: string): Promise<Project> {
     console.warn('[api] getProject fell back to mock (backend unreachable):', err);
     return mockProject(projectId, mockProjectStatusFor(projectId));
   }
+}
+
+/** GET /projects/{id}/moderation — moderation verdict + audit trail. */
+export async function getModeration(projectId: string): Promise<ModerationView> {
+  try {
+    return await request<ModerationView>(
+      `/projects/${encodeURIComponent(projectId)}/moderation`,
+    );
+  } catch (err) {
+    console.warn('[api] getModeration fell back to empty view:', err);
+    return { project_id: projectId, status: 'PENDING', events: [] };
+  }
+}
+
+/** POST /projects/{id}/moderation/override — moderator review (needs moderator role). */
+export async function overrideModeration(
+  projectId: string,
+  decision: 'ALLOW' | 'BLOCK',
+  note?: string,
+): Promise<ModerationView> {
+  return request<ModerationView>(
+    `/projects/${encodeURIComponent(projectId)}/moderation/override`,
+    { method: 'POST', body: JSON.stringify({ decision, note }) },
+  );
 }
 
 /** GET /projects/{id}/highlights — highlight candidates (501 until M2 → mock). */
