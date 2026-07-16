@@ -10,3 +10,8 @@ env     = "dev"
 # this with the real private ECR image once it is built & pushed:
 #   backend_image = "<account-id>.dkr.ecr.us-east-1.amazonaws.com/lang-live-backend-dev:latest"
 backend_image = "public.ecr.aws/docker/library/nginx:latest"
+
+# Email for CloudWatch alarm notifications (DLQ depth, throttles, SFN failures).
+# Set it HERE (terraform.tfvars is gitignored) — never in variables.tf, which is
+# public. Empty/unset = SNS topic created but no email subscription.
+# alert_email = "you@example.com"

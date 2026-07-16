@@ -5,11 +5,7 @@ EDIT_PLANNER_LLM 未設 → StubEditPlanner（= plan_effects + plan_subtitles ba
 """
 from __future__ import annotations
 
-import json
-
 from analysis.validate import validate_effects, validate_subtitle
-
-REGION = "us-east-1"
 
 
 def test_edit_by_language_stub_produces_valid_plan(client, ready_project):
@@ -49,26 +45,26 @@ def test_edit_by_language_stub_produces_valid_plan(client, ready_project):
     assert pj["subtitle"]["schema_version"] == "subtitle.v1"
 
 
-def test_edit_by_language_enqueues_render(client, ready_project, monkeypatch):
-    import boto3
-
+def test_edit_by_language_starts_render_workflow(client, ready_project, monkeypatch):
+    """WS3: the edit route renders through the SAME render SFN → Batch as pipeline
+    (start_render), not the removed ai-task lane. encode=True → StartExecution."""
     from app.aws import orchestration
 
-    sqs = boto3.client("sqs", region_name=REGION)
-    qurl = sqs.create_queue(QueueName="ai-task-test")["QueueUrl"]
-    monkeypatch.setenv("AI_TASK_QUEUE_URL", qurl)
-    orchestration.get_orchestrator.cache_clear()  # 重綁為 AwsOrchestrator（USE_INMEMORY=0）
-    try:
-        resp = client.post(
-            f"/projects/{ready_project}/edit-by-language",
-            json={"instruction": "加特效", "encode": True},
-        )
-        assert resp.status_code == 202, resp.text
-        assert resp.json()["enqueued"] is True
-        msgs = sqs.receive_message(QueueUrl=qurl).get("Messages", [])
-        assert msgs, "應把 render 任務送進 ai-task 佇列"
-    finally:
-        orchestration.get_orchestrator.cache_clear()
+    monkeypatch.setenv(
+        "RENDER_STATE_MACHINE_ARN", "arn:aws:states:us-east-1:000000000000:stateMachine:render-test"
+    )
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        orchestration, "start_render",
+        lambda render_id, project_id, tv: calls.append((render_id, project_id, tv)) or "exec-arn",
+    )
+    resp = client.post(
+        f"/projects/{ready_project}/edit-by-language",
+        json={"instruction": "加特效", "encode": True},
+    )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["enqueued"] is True
+    assert calls and calls[0][1] == ready_project  # render SFN started for this project
 
 
 def test_edit_by_language_missing_project_404(client):
@@ -86,19 +82,19 @@ def test_get_edit_plan_missing_404(client, ready_project):
     assert resp.status_code == 404
 
 
-def test_ai_task_render_consumer_dispatches_and_is_idempotent(client, ready_render):
-    """ai-task SQS consumer 跑 render_worker.run（stub encoder），重投冪等跳過。"""
-    from workers import lambda_handlers
+def test_edit_render_encodes_via_shared_render_worker(client, ready_project):
+    """WS3: an edit-route plan renders through the SAME render_worker.run the Batch
+    path uses (the ai-task Lambda lane is removed). Produces a route='edit' artifact."""
+    from app.repository import get_repository
+    from app.storage import get_storage
+    from workers import render_worker
 
-    project_id, render_id = ready_render
-    event = {"Records": [{"body": json.dumps(
-        {"task": "render", "render_id": render_id, "project_id": project_id}
-    )}]}
-
-    out = lambda_handlers.ai_task_render(event)
-    assert out["rendered"][0]["status"] == "SUCCEEDED"
-    assert not out["rendered"][0].get("skipped")
-
-    # 重投同一則 → 冪等 short-circuit（不重跑、不觸發狀態機 assert）
-    out2 = lambda_handlers.ai_task_render(event)
-    assert out2["rendered"][0]["skipped"] is True
+    # Plan an edit render (encode deferred), then run the shared render worker on it.
+    resp = client.post(
+        f"/projects/{ready_project}/edit-by-language",
+        json={"instruction": "加特效", "encode": False},
+    )
+    render_id = resp.json()["render_id"]
+    artifact = render_worker.run(get_repository(), get_storage(), ready_project, render_id)
+    assert artifact["status"] == "READY"
+    assert artifact["route"] == "edit"

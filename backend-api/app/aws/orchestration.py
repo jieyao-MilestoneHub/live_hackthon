@@ -116,9 +116,17 @@ def start_analysis(
     bucket: str,
     key: str,
     version_id: str | None = None,
+    dedup_key: str | None = None,
 ) -> str | None:
-    """Kick the analysis+composition workflow. Execution name is deterministic
-    on project_id+version_id so duplicate S3 events collapse to one run."""
+    """Kick the analysis+composition workflow. The execution name is deterministic
+    on project_id + a per-upload dedup token so duplicate S3 events collapse to one
+    run while a genuine re-upload starts a fresh one.
+
+    ``dedup_key`` is the caller's best per-upload identity (version-id → etag →
+    sequencer; see ``starter``). It falls back to ``version_id`` then ``'v0'`` only
+    when nothing was supplied — with raw-bucket versioning on this is unreachable in
+    practice, but 'v0' would swallow a re-upload, so callers should always pass one.
+    """
     payload = {
         "project_id": project_id,
         "tenant_id": tenant_id,
@@ -126,13 +134,7 @@ def start_analysis(
         "key": key,
         "version_id": version_id,
     }
-    # Idempotency key = project_id + version_id — equivalent to demand.md §六's
-    # "bucket + key + version_id" (bucket is fixed; key <-> project_id is 1:1 via
-    # tenant=/project=/source/). Raw bucket versioning is Enabled, so a re-upload
-    # carries a new version_id -> new name -> fresh run. The 'v0' fallback only
-    # applies when an event lacks version-id; then a re-upload to the same project
-    # reuses '{project_id}-v0' and is swallowed as a duplicate (no re-analysis).
-    name = f"{project_id}-{version_id or 'v0'}"
+    name = f"{project_id}-{dedup_key or version_id or 'v0'}"
     return get_orchestrator().start_execution(
         _require_env("ANALYSIS_STATE_MACHINE_ARN"), name, payload
     )
@@ -151,6 +153,3 @@ def start_render(render_id: str, project_id: str, timeline_version: int) -> str 
     )
 
 
-def enqueue_ai_task(payload: dict[str, Any]) -> str:
-    """Put a light AI task (e.g. re-compose) on the ai-task queue."""
-    return get_orchestrator().send_message(_require_env("AI_TASK_QUEUE_URL"), payload)

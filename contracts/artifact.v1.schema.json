@@ -13,8 +13,8 @@
     "render_id": { "type": "string" },
     "route": {
       "type": "string",
-      "enum": ["pipeline", "agent"],
-      "description": "產出此成品的創意路線：pipeline=規則式管線 / agent=AI agent。雙軌分流下同一 project 可有多個 route 的 artifact 供使用者自由下載。未提供時視為 pipeline。"
+      "enum": ["pipeline", "edit"],
+      "description": "產出此成品的創意路線：pipeline=規則式管線 / edit=AI 自然語言剪接。雙軌分流下同一 project 可有多個 route 的 artifact 供使用者自由下載。未提供時視為 pipeline。"
     },
     "timeline_version": { "type": "integer", "minimum": 1 },
     "status": { "type": "string", "enum": ["READY", "FAILED"], "description": "產物層級狀態（有別於 Render/Project 狀態機）" },
@@ -31,6 +31,20 @@
     },
     "size_bytes": { "type": "integer", "minimum": 0 },
     "checksum": { "type": "string", "description": "如 sha256:..." },
+    "moderation": {
+      "type": "object",
+      "description": "內容審核摘要（來自 project.moderation_status + 最近一次 SCAN 稽核事件）。讓下載端在 manifest 上即可見審核結論；additive 選填欄位，未提供時視為未附審核資訊。",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string", "enum": ["PENDING", "ALLOWED", "FLAGGED", "BLOCKED", "OVERRIDDEN"] },
+        "visual_label_count": { "type": "integer", "minimum": 0 },
+        "text_finding_count": { "type": "integer", "minimum": 0 },
+        "top_categories": { "type": "array", "items": { "type": "string" } },
+        "policy_version": { "type": "string" },
+        "decided_at": { "type": "string" }
+      }
+    },
     "files": {
       "type": "object",
       "required": ["video_key"],

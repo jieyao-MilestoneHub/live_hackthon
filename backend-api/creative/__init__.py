@@ -11,7 +11,6 @@ from creative.effects_registry import (
 )
 from creative.planners import (
     DUAL_TRACK_ROUTES,
-    AgentPlanner,
     CreativePlanner,
     PipelinePlanner,
     get_creative_planner,
@@ -39,7 +38,6 @@ __all__ = [
     # dual-track creative planners
     "CreativePlanner",
     "PipelinePlanner",
-    "AgentPlanner",
     "get_creative_planner",
     "register_planner",
     "DUAL_TRACK_ROUTES",

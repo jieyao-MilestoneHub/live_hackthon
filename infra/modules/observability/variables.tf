@@ -34,6 +34,18 @@ variable "intake_queue_name" {
   description = "analysis-intake SQS queue name."
 }
 
+variable "alert_email" {
+  type        = string
+  default     = ""
+  description = "Email subscribed to the alarm SNS topic (DLQ depth, throttles, SFN failures). Empty = create the topic but no subscription. AWS sends a one-time confirmation email that must be clicked."
+}
+
+variable "dlq_queue_names" {
+  type        = list(string)
+  default     = []
+  description = "DLQ queue names to alarm on (ApproximateNumberOfMessagesVisible > 0). A non-empty DLQ means a record was dropped after all retries — nobody consumes it, so the alarm is the only signal."
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

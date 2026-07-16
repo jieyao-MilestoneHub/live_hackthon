@@ -31,6 +31,8 @@ from app.schemas import (
     AnalyzeResult,
     Annotations,
     Artifact,
+    BatchMember,
+    BatchView,
     ChatUploadUrl,
     ComposeRequest,
     DownloadUrl,
@@ -196,7 +198,9 @@ def create_project(
 ) -> ProjectCreated:
     settings = get_settings()
     project_id = _new_project_id(body.title)
-    source_key = settings.source_key(principal.tenant_id, project_id)
+    # Batch uploads (WS6) nest the source under batch={batch_id}/ so a batch's files
+    # sit together in S3; each file is still its own project + parallel analysis run.
+    source_key = settings.source_key(principal.tenant_id, project_id, batch_id=body.batch_id)
 
     item = {
         "project_id": project_id,
@@ -209,11 +213,17 @@ def create_project(
         "source_bucket": settings.raw_bucket,
         "source_key": source_key,
         "latest_timeline_version": 0,
+        # Default NL instruction for the auto dual-track edit route (mark_ready /
+        # chat_starter read it). None → the pipeline uses DEFAULT_EDIT_INSTRUCTION.
+        "edit_instruction": body.edit_instruction,
+        "batch_id": body.batch_id,
     }
     try:
         repo.create_project(item)
     except KeyError:
         raise HTTPException(status_code=409, detail="project already exists")
+    if body.batch_id:
+        repo.put_batch_member(body.batch_id, project_id)
 
     return ProjectCreated(
         project_id=project_id,
@@ -221,6 +231,29 @@ def create_project(
         target_duration_ms=body.target_duration_ms,
         source_key=source_key,
     )
+
+
+@app.get("/batches/{batch_id}", response_model=BatchView)
+def get_batch(
+    batch_id: str,
+    repo: ProjectRepository = Depends(get_repository),
+) -> BatchView:
+    """WS6: the projects grouped under one batch_id, with live status — powers the
+    batch dashboard. Each member ran its own parallel analysis; this just fans out a
+    read over the batch's members."""
+    members: list[BatchMember] = []
+    for pid in repo.list_batch_member_ids(batch_id):
+        p = repo.get_project(pid)
+        if p is None:
+            continue
+        members.append(BatchMember(
+            project_id=pid,
+            title=p.get("title"),
+            status=p["status"],
+            moderation_status=p.get("moderation_status"),
+            latest_artifact_id=p.get("latest_artifact_id"),
+        ))
+    return BatchView(batch_id=batch_id, count=len(members), members=members)
 
 
 @app.post(

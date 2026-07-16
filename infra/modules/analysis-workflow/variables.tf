@@ -80,6 +80,38 @@ variable "bedrock_review_model_id" {
   description = "Bedrock model used for highlight copy (matches app/aws/config nova_review_model_id)."
 }
 
+# --- Auto dual-track (WS3): mark_ready StartExecutions the render SFN for the
+#     pipeline + edit routes. The edit route's NL planner is Stub by default.
+variable "render_state_machine_arn" {
+  type        = string
+  default     = ""
+  description = "Render workflow ARN. When set, mark_ready auto-fires the pipeline + edit renders (StartExecution) and the worker role is granted states:StartExecution on it."
+}
+
+variable "edit_planner_llm" {
+  type        = bool
+  default     = false
+  description = "Edit route NL planner: false = deterministic Stub (no Bedrock); true = Claude on Bedrock (grants InvokeModel on bedrock_model_arns)."
+}
+
+variable "edit_planner_model_id" {
+  type        = string
+  default     = ""
+  description = "Bedrock Claude id for model_tier=fast (edit planner). From the probe."
+}
+
+variable "edit_planner_quality_model_id" {
+  type        = string
+  default     = ""
+  description = "Bedrock Claude id for model_tier=quality (edit planner)."
+}
+
+variable "bedrock_model_arns" {
+  type        = list(string)
+  default     = []
+  description = "foundation-model / inference-profile ARNs the edit planner may InvokeModel. Required (non-empty) when edit_planner_llm=true."
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

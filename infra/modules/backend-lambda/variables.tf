@@ -123,30 +123,9 @@ variable "enable_render_start" {
   description = "Create the states:StartExecution IAM policy for the render workflow. A static flag (not derived from render_state_machine_arn, whose value is unknown at plan time — count/for_each must be known at plan)."
 }
 
-# --- edit-by-language (sidecar) wiring -------------------------------------
-# Two independent gates map to the feature's two routes:
-#   enable_edit_by_language → async encode lane (SQS SendMessage + AI_TASK_QUEUE_URL)
-#                             — Route A (deterministic Stub planner) works with just this.
-#   edit_planner_llm        → flip to Route B (Claude on Bedrock): grants
-#                             bedrock:InvokeModel + sets EDIT_PLANNER_LLM=1.
-variable "enable_edit_by_language" {
-  type        = bool
-  default     = false
-  description = "Wire the edit-by-language async encode lane: grant sqs:SendMessage to ai-task + set AI_TASK_QUEUE_URL."
-}
-
-variable "ai_task_queue_arn" {
-  type        = string
-  default     = ""
-  description = "ai-task SQS queue ARN the sidecar enqueues encode jobs onto."
-}
-
-variable "ai_task_queue_url" {
-  type        = string
-  default     = ""
-  description = "ai-task SQS queue URL (AI_TASK_QUEUE_URL env)."
-}
-
+# --- edit-by-language planner ----------------------------------------------
+# The edit route renders through the render SFN → Batch (no separate encode lane).
+# edit_planner_llm flips the NL planner Stub → Claude on Bedrock (+ grants InvokeModel).
 variable "edit_planner_llm" {
   type        = bool
   default     = false

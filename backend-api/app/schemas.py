@@ -50,6 +50,8 @@ __all__ = [
     "Render",
     "Artifact",
     "DownloadUrl",
+    "BatchMember",
+    "BatchView",
 ]
 
 
@@ -69,6 +71,24 @@ class ProjectCreate(BaseModel):
         description=(
             "高光分析來源。'transcribe'（預設）：影片上傳後 S3 事件自動走 Transcribe→highlights；"
             "'chat'：改由聊天 LOG（POST /analyze）產生高光，Starter 會略過自動 Transcribe。"
+        ),
+    )
+    edit_instruction: str | None = Field(
+        default=None,
+        examples=["剪出幾個最精彩的爆梗片段，串成一支高光短片"],
+        description=(
+            "AI 剪接路線的預設自然語言指令。分析完成後自動雙軌並行（pipeline + edit）各出一支"
+            "artifact，edit 路線用此指令規劃；省略則用系統預設模板。使用者可事後 POST"
+            " /edit-by-language 用新指令重剪。"
+        ),
+    )
+    batch_id: str | None = Field(
+        default=None,
+        examples=["batch-20260716T101530"],
+        description=(
+            "批次分組 id（前端一次批量上傳共用的時間戳）。每個檔案仍是獨立 Project、各自觸發"
+            "分析、真正平行；同 batch_id 的成員可用 GET /batches/{batch_id} 一次查詢，S3 source"
+            " 也會 nest 在 batch={batch_id}/ 前綴下。"
         ),
     )
 
@@ -104,6 +124,24 @@ class Project(BaseModel):
     updated_at: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+
+
+class BatchMember(BaseModel):
+    """One project in a batch (WS6): its id + live status for the batch dashboard."""
+
+    project_id: str
+    title: str | None = None
+    status: ProjectState
+    moderation_status: ModerationStatus | None = None
+    latest_artifact_id: str | None = None
+
+
+class BatchView(BaseModel):
+    """GET /batches/{batch_id} response: the members grouped by shared batch_id."""
+
+    batch_id: str
+    count: int
+    members: list[BatchMember] = Field(default_factory=list)
 
 
 class ModerationEvent(BaseModel):
@@ -430,7 +468,7 @@ class RenderCreate(BaseModel):
     timeline_version: int | None = Field(
         default=None, description="省略則使用 latest_timeline_version"
     )
-    route: Literal["pipeline", "agent"] | None = Field(
+    route: Literal["pipeline", "edit"] | None = Field(
         default=None, description="創意路線（省略＝pipeline）"
     )
 
@@ -448,7 +486,7 @@ class Render(BaseModel):
     render_id: str
     project_id: str
     status: RenderState
-    route: Literal["pipeline", "agent"] | None = None
+    route: Literal["pipeline", "edit"] | None = None
     current_stage: str | None = None
     timeline_version: int
     effect_seed: int | None = None
@@ -467,7 +505,7 @@ class Artifact(BaseModel):
     artifact_id: str
     project_id: str
     render_id: str
-    route: Literal["pipeline", "agent"] | None = None
+    route: Literal["pipeline", "edit"] | None = None
     timeline_version: int | None = None
     status: str
     duration_ms: int | None = None

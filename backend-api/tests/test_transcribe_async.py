@@ -100,3 +100,40 @@ def test_starter_returns_partial_batch_shape(inmem) -> None:
     assert "batchItemFailures" in out
     assert out["batchItemFailures"] == []
     assert out["started"] and out["started"][0]["project_id"] == "project-starter-1"
+
+
+def test_starter_dedup_prefers_etag_over_v0(inmem) -> None:
+    """WS4 re-upload dedup: with no version-id, the etag is the idempotency token —
+    a duplicate delivery (same etag) collapses to one run, a genuine re-upload
+    (new etag) starts a FRESH run, instead of everything colliding on '{pid}-v0'."""
+    from app.aws import orchestration
+    from app.settings import get_settings
+    from workers import lambda_handlers
+
+    _seed_project("project-etag-1")
+    key = get_settings().source_key("demo", "project-etag-1")
+
+    def _evt(etag: str) -> dict:
+        detail = {"detail": {"bucket": {"name": RAW}, "object": {"key": key, "etag": etag}}}
+        return {"Records": [{"messageId": "m", "body": json.dumps(detail)}]}
+
+    lambda_handlers.starter(_evt("etagA"))   # first upload
+    lambda_handlers.starter(_evt("etagA"))   # duplicate delivery → deduped
+    lambda_handlers.starter(_evt("etagB"))   # genuine re-upload → fresh run
+
+    names = {e["name"] for e in orchestration.get_orchestrator().executions}
+    assert names == {"project-etag-1-etagA", "project-etag-1-etagB"}
+
+
+def test_starter_parses_batch_nested_key(inmem) -> None:
+    """WS6: a batch-nested source key (tenant=/batch=/project=/source/) still routes
+    to the right project — the batch segment is optional in the starter regex."""
+    from app.settings import get_settings
+    from workers import lambda_handlers
+
+    _seed_project("project-batched-1")
+    key = get_settings().source_key("demo", "project-batched-1", batch_id="batch-x")
+    assert "/batch=batch-x/" in key
+    detail = {"detail": {"bucket": {"name": RAW}, "object": {"key": key, "version-id": "v1"}}}
+    out = lambda_handlers.starter({"Records": [{"messageId": "m", "body": json.dumps(detail)}]})
+    assert out["started"] and out["started"][0]["project_id"] == "project-batched-1"

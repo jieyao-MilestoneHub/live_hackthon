@@ -69,10 +69,9 @@ module "backend_lambda" {
   render_state_machine_arn = module.render_workflow.state_machine_arn
   enable_render_start      = true
 
-  # edit-by-language sidecar: enqueue encode onto ai-task + (optional) Claude planner.
-  enable_edit_by_language       = var.enable_edit_by_language
-  ai_task_queue_arn             = module.analysis_ingress.ai_task_queue_arn
-  ai_task_queue_url             = module.analysis_ingress.ai_task_queue_url
+  # edit-by-language: the edit route renders through the render SFN → Batch (same
+  # data flow as pipeline; StartExecution already granted by enable_render_start).
+  # EDIT_PLANNER_LLM picks Claude-on-Bedrock vs the deterministic Stub planner.
   edit_planner_llm              = var.edit_planner_llm
   edit_planner_model_id         = var.edit_planner_model_id
   edit_planner_quality_model_id = var.edit_planner_quality_model_id
@@ -101,6 +100,15 @@ module "analysis_workflow" {
   # critical path (deterministic scorer still produces highlights).
   highlight_llm_enrich = var.highlight_llm_enrich
   moderation_enabled   = var.moderation_enabled
+
+  # Auto dual-track: mark_ready StartExecutions the render SFN for pipeline + edit
+  # (needs states:StartExecution + the ARN). The edit route's NL planner is Stub by
+  # default; edit_planner_llm=true switches it to Claude on Bedrock.
+  render_state_machine_arn      = module.render_workflow.state_machine_arn
+  edit_planner_llm              = var.edit_planner_llm
+  edit_planner_model_id         = var.edit_planner_model_id
+  edit_planner_quality_model_id = var.edit_planner_quality_model_id
+  bedrock_model_arns            = var.bedrock_model_arns
 }
 
 module "analysis_ingress" {
@@ -164,26 +172,8 @@ module "render_workflow" {
   batch_job_definition_arn = module.render_batch.job_definition_arn
 }
 
-# --- edit-by-language encode: ffmpeg-in-Lambda consumer of the ai-task queue ---
-# Gated off by default (enable_edit_by_language=false): needs the Bedrock probe +
-# a pushed Dockerfile.render-lambda image first. Flip on (with render_lambda_image
-# set) to create the consumer; it reuses the existing ai-task queue, not Batch.
-module "ai_task_render" {
-  count  = var.enable_edit_by_language ? 1 : 0
-  source = "../../modules/ai-task-render"
-  name   = "${var.project}-render-${var.env}"
-
-  image_uri = var.render_lambda_image
-  env       = var.env
-
-  ai_task_queue_arn = module.analysis_ingress.ai_task_queue_arn
-  dynamodb_table    = module.state_table.table_name
-  table_arn         = module.state_table.table_arn
-  raw_bucket        = module.storage_editor.raw_bucket
-  work_bucket       = module.storage_editor.work_bucket
-  output_bucket     = module.storage_editor.output_bucket
-  bucket_arns       = module.storage_editor.bucket_arns
-}
+# (Removed: the ai-task ffmpeg-in-Lambda encoder. The edit route now renders through
+# the SAME render SFN → Batch as pipeline — one encoder, one data flow. See WS3.)
 
 # --- Observability: CloudWatch dashboard + alarms to prove the batch demo is
 #     healthy (Lambda throttles/concurrency, SFN, DynamoDB, SQS backlog). ------
@@ -198,4 +188,12 @@ module "observability" {
   table_name                 = module.state_table.table_name
   # analysis-intake queue name = last ':' segment of its ARN.
   intake_queue_name = element(split(":", module.analysis_ingress.intake_queue_arn), 5)
+
+  # DLQ depth alarms → email (WS4). Nobody consumes the DLQs, so the alarm is the
+  # only signal a record was dropped after all retries.
+  alert_email = var.alert_email
+  dlq_queue_names = [
+    module.analysis_ingress.intake_dlq_name,
+    module.analysis_ingress.chat_intake_dlq_name,
+  ]
 }

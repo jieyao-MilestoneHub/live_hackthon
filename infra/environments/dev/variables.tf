@@ -40,19 +40,7 @@ variable "render_image" {
   description = "ECR image URI for the FFmpeg render Batch container."
 }
 
-# --- edit-by-language (default OFF; enable after Bedrock probe) -------------
-variable "enable_edit_by_language" {
-  type        = bool
-  default     = false
-  description = "Create the ai-task-render consumer + grant the sidecar sqs:SendMessage/AI_TASK_QUEUE_URL. Enable after pushing Dockerfile.render-lambda."
-}
-
-variable "render_lambda_image" {
-  type        = string
-  default     = "public.ecr.aws/lambda/python:3.11"
-  description = "ffmpeg-in-Lambda render image (Dockerfile.render-lambda). deploy: -var render_lambda_image=<render-ecr>:lambda"
-}
-
+# --- edit-by-language planner (edit route; default Stub, no Bedrock) --------
 variable "edit_planner_llm" {
   type        = bool
   default     = false
@@ -102,6 +90,17 @@ variable "highlight_llm_enrich" {
   type        = bool
   default     = true
   description = "Bedrock title/reason enrichment for top highlights. Set false for the demo to drop ~150 concurrent converse calls off the critical path (the deterministic scorer still produces highlights)."
+}
+
+variable "alert_email" {
+  type    = string
+  default = ""
+  # Email subscribed to the CloudWatch alarm SNS topic (DLQ depth, backend throttles,
+  # SFN failures). Do NOT hardcode a real address here — this repo is public and that
+  # would expose it as scrapable PII. Set it at deploy time via a gitignored
+  # terraform.tfvars or `-var alert_email=...`. Empty (default) = create the topic but
+  # no email subscription. AWS sends a one-time confirmation email that must be clicked.
+  description = "Email subscribed to the alarm SNS topic. Leave unset in the repo; pass via terraform.tfvars or -var at deploy. Empty = no email subscription."
 }
 
 variable "moderation_enabled" {

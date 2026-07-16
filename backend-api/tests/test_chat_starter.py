@@ -89,6 +89,22 @@ def test_chat_starter_idempotent_second_drop(inmem) -> None:
     assert second["started"] == []
 
 
+def test_chat_starter_partial_batch_isolates_failure(inmem) -> None:
+    """WS4: a transient failure (chat.csv object missing → get_bytes raises) is
+    reported as a batchItemFailure so SQS re-drives ONLY that record."""
+    from app.settings import get_settings
+    from workers import lambda_handlers
+
+    pid = "project-missing-csv"
+    key = get_settings().chat_key("demo", pid)  # deliberately NOT seeded into storage
+    detail = {"detail": {"bucket": {"name": RAW}, "object": {"key": key}}}
+    event = {"Records": [{"messageId": "bad-1", "body": json.dumps(detail)}]}
+
+    res = lambda_handlers.chat_starter(event)
+    assert res["batchItemFailures"] == [{"itemIdentifier": "bad-1"}]
+    assert res["started"] == []
+
+
 def test_chat_starter_empty_chat_marks_failed(inmem) -> None:
     from app.repository import get_repository
     from app.settings import get_settings

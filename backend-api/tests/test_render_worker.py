@@ -36,6 +36,16 @@ def test_render_worker_publishes_artifact(ready_render) -> None:
     assert manifest["resolution"] == {"width": 1080, "height": 1920}
 
 
+def test_manifest_carries_moderation_summary(ready_render) -> None:
+    """WS1: the artifact.v1 manifest surfaces the moderation verdict for the
+    downloader (effect visible in the artifact, per the 'manifest annotation' rule)."""
+    project_id, render_id = ready_render
+    repo, storage = get_repository(), get_storage()
+    artifact = render_worker.run(repo, storage, project_id, render_id)
+    validate_artifact(artifact)
+    assert artifact["moderation"]["status"] == "ALLOWED"  # ready_render seeds ALLOWED
+
+
 def test_cannot_rerender_succeeded(ready_render) -> None:
     project_id, render_id = ready_render
     repo, storage = get_repository(), get_storage()
