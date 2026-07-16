@@ -54,13 +54,22 @@ class Settings:
     # header-based identity/role self-grant is impossible in production. See auth.py.
     auth_dev_headers: bool = True
 
-    def source_key(self, tenant_id: str, project_id: str, filename: str = "source.mp4") -> str:
-        """Raw-bucket object key per demand.md §十六."""
-        return f"tenant={tenant_id}/project={project_id}/source/{filename}"
+    def source_key(
+        self, tenant_id: str, project_id: str, filename: str = "source.mp4", *, batch_id: str | None = None
+    ) -> str:
+        """Raw-bucket object key (demand.md §十六). Batch uploads (WS6) nest the source
+        under a shared ``batch={batch_id}`` prefix so a batch's files sit together in
+        S3 under one timestamp; each file is still its own project + parallel run."""
+        prefix = f"tenant={tenant_id}"
+        if batch_id:
+            prefix += f"/batch={batch_id}"
+        return f"{prefix}/project={project_id}/source/{filename}"
 
-    def chat_key(self, tenant_id: str, project_id: str, filename: str = "chat.csv") -> str:
+    def chat_key(
+        self, tenant_id: str, project_id: str, filename: str = "chat.csv", *, batch_id: str | None = None
+    ) -> str:
         """Raw-bucket key for the uploaded chat-room log CSV (聊天優先分析輸入)."""
-        return self.source_key(tenant_id, project_id, filename)
+        return self.source_key(tenant_id, project_id, filename, batch_id=batch_id)
 
     def _project_prefix(self, tenant_id: str, project_id: str) -> str:
         return f"tenant={tenant_id}/project={project_id}"

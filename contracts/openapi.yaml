@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: 浪 LIVE Editor API
-  version: 0.8.0
+  version: 0.9.0
   description: >
     影片高光剪輯「編輯器控制面」API（前後端共用契約）。M1 Project/毫秒版：
     核心實體為 Project、時間一律毫秒（ms）、雙 pipeline（分析組片 + 渲染）。
@@ -107,6 +107,22 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Project" }
         "404": { description: 不存在 }
+
+  /batches/{batch_id}:
+    get:
+      summary: 查詢一個批次的所有成員 Project 與狀態（批次儀表板；WS6）
+      description: >
+        回傳同一 batch_id 下所有 Project 的即時狀態。每個檔案是獨立 Project、各自平行分析；
+        此端點只是對批次成員做扇出讀取。
+      operationId: getBatch
+      parameters:
+        - { name: batch_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK（成員可能為空）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchView" }
 
   /projects/{id}/chat-upload:
     post:
@@ -639,6 +655,19 @@ components:
           description: >
             高光分析來源。transcribe（預設）：影片上傳後 S3 事件自動走 Transcribe→highlights；
             chat：改由聊天室 LOG（POST /analyze）產生高光，Starter 略過自動 Transcribe。
+        edit_instruction:
+          type: string
+          example: 剪出幾個最精彩的爆梗片段，串成一支高光短片
+          description: >
+            AI 剪接路線的預設自然語言指令。分析完成後自動雙軌並行（pipeline + edit）各出一支
+            artifact，edit 路線用此指令規劃；省略則用系統預設模板。
+        batch_id:
+          type: string
+          example: batch-20260716T101530
+          description: >
+            批次分組 id（一次批量上傳共用的時間戳）。每個檔案仍是獨立 Project、各自觸發分析、
+            真正平行；同 batch_id 成員可用 GET /batches/{batch_id} 查詢，S3 source nest 在
+            batch={batch_id}/ 前綴下。
 
     ProjectCreated:
       type: object
@@ -650,6 +679,27 @@ components:
         source_key:
           type: string
           description: 已配置的 Raw bucket object key（上傳完成後才會有物件）
+
+    BatchMember:
+      type: object
+      required: [project_id, status]
+      properties:
+        project_id: { type: string }
+        title: { type: string }
+        status: { $ref: "#/components/schemas/ProjectState" }
+        moderation_status: { $ref: "#/components/schemas/ModerationStatus" }
+        latest_artifact_id: { type: string }
+
+    BatchView:
+      type: object
+      required: [batch_id, count, members]
+      description: GET /batches/{batch_id} 回應：同一 batch_id 分組的成員（WS6）
+      properties:
+        batch_id: { type: string }
+        count: { type: integer }
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/BatchMember" }
 
     Project:
       type: object
@@ -994,7 +1044,7 @@ components:
         timeline_version: { type: integer, description: 省略則使用 latest_timeline_version }
         route:
           type: string
-          enum: [pipeline, agent]
+          enum: [pipeline, edit]
           description: 創意路線（省略＝pipeline）。雙軌分流由 compose 後自動各建一個 route 的 render。
 
     RenderCreated:
@@ -1011,7 +1061,7 @@ components:
         render_id: { type: string }
         project_id: { type: string }
         status: { $ref: "#/components/schemas/RenderState" }
-        route: { type: string, enum: [pipeline, agent], description: 創意路線（省略＝pipeline） }
+        route: { type: string, enum: [pipeline, edit], description: 創意路線（省略＝pipeline） }
         current_stage: { type: string }
         timeline_version: { type: integer }
         effect_seed: { type: integer }
@@ -1031,7 +1081,7 @@ components:
         artifact_id: { type: string }
         project_id: { type: string }
         render_id: { type: string }
-        route: { type: string, enum: [pipeline, agent], description: 產出此成品的創意路線（省略＝pipeline） }
+        route: { type: string, enum: [pipeline, edit], description: 產出此成品的創意路線（省略＝pipeline） }
         timeline_version: { type: integer }
         status: { type: string, enum: [READY, FAILED] }
         duration_ms: { type: integer }
@@ -1042,6 +1092,17 @@ components:
             width: { type: integer }
             height: { type: integer }
         size_bytes: { type: integer }
+        moderation:
+          type: object
+          description: 內容審核摘要（讓下載端在 manifest 上即可見審核結論；WS1）
+          required: [status]
+          properties:
+            status: { type: string, enum: [PENDING, ALLOWED, FLAGGED, BLOCKED, OVERRIDDEN] }
+            visual_label_count: { type: integer }
+            text_finding_count: { type: integer }
+            top_categories: { type: array, items: { type: string } }
+            policy_version: { type: string }
+            decided_at: { type: string }
         files:
           type: object
           properties:

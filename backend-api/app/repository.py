@@ -73,6 +73,14 @@ def _artifact_sk(artifact_id: str) -> str:
     return f"{_ARTIFACT_SK_PREFIX}{artifact_id}"
 
 
+def _batch_pk(batch_id: str) -> str:
+    return f"BATCH#{batch_id}"
+
+
+def _batch_member_sk(project_id: str) -> str:
+    return f"PROJECT#{project_id}"
+
+
 class ProjectRepository(abc.ABC):
     """Persistence port for the Project META item."""
 
@@ -181,6 +189,16 @@ class ProjectRepository(abc.ABC):
     def list_progress_events(self, project_id: str) -> list[dict[str, Any]]:
         """Return the project's progress feed, oldest→newest (empty if none)."""
 
+    @abc.abstractmethod
+    def put_batch_member(self, batch_id: str, project_id: str) -> None:
+        """Register a project as a member of a batch (WS6). Idempotent + race-free:
+        parallel batch creates each write their OWN marker under BATCH#{batch_id}, so
+        there is no read-modify-write contention."""
+
+    @abc.abstractmethod
+    def list_batch_member_ids(self, batch_id: str) -> list[str]:
+        """Return the project_ids that belong to a batch (empty list if none)."""
+
 
 class InMemoryProjectRepository(ProjectRepository):
     """Process-local store for offline dev / tests."""
@@ -195,6 +213,7 @@ class InMemoryProjectRepository(ProjectRepository):
         self._artifact_pointers: dict[str, str] = {}
         self._moderation: dict[str, list[dict[str, Any]]] = {}
         self._progress: dict[str, list[dict[str, Any]]] = {}
+        self._batches: dict[str, list[str]] = {}
 
     def create_project(self, item: dict[str, Any]) -> dict[str, Any]:
         project_id = item["project_id"]
@@ -310,6 +329,14 @@ class InMemoryProjectRepository(ProjectRepository):
     def list_progress_events(self, project_id: str) -> list[dict[str, Any]]:
         events = self._progress.get(project_id, [])
         return copy.deepcopy(sorted(events, key=lambda e: e.get("created_at", "")))
+
+    def put_batch_member(self, batch_id: str, project_id: str) -> None:
+        members = self._batches.setdefault(batch_id, [])
+        if project_id not in members:
+            members.append(project_id)
+
+    def list_batch_member_ids(self, batch_id: str) -> list[str]:
+        return list(self._batches.get(batch_id, []))
 
 
 def _coerce_numbers(value: Any) -> Any:
@@ -653,6 +680,25 @@ class DynamoProjectRepository(ProjectRepository):
         )
         # SK is time-prefixed, so Query already returns oldest→newest.
         return [self._strip_keys(it) for it in resp.get("Items", [])]
+
+    def put_batch_member(self, batch_id: str, project_id: str) -> None:
+        # One marker item per member under BATCH#{batch_id}; a plain put is idempotent
+        # and race-free (each parallel create writes its own SK) — no read-modify-write.
+        self._table.put_item(Item={
+            _PK: _batch_pk(batch_id),
+            _SK: _batch_member_sk(project_id),
+            "project_id": project_id,
+            "created_at": _now_iso(),
+        })
+
+    def list_batch_member_ids(self, batch_id: str) -> list[str]:
+        from boto3.dynamodb.conditions import Key
+
+        resp = self._table.query(
+            KeyConditionExpression=Key(_PK).eq(_batch_pk(batch_id))
+            & Key(_SK).begins_with("PROJECT#"),
+        )
+        return [it["project_id"] for it in resp.get("Items", [])]
 
 
 @lru_cache(maxsize=1)

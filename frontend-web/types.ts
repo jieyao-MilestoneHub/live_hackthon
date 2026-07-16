@@ -93,6 +93,10 @@ export interface ProjectCreate {
    * via POST /analyze; the Starter skips auto-Transcribe.
    */
   analysis_source?: AnalysisSource;
+  /** Default NL instruction for the auto dual-track edit route (WS3). */
+  edit_instruction?: string;
+  /** Shared batch id (WS6): a batch upload passes one timestamp for all its files. */
+  batch_id?: string;
 }
 
 /** Response of POST /projects (openapi: ProjectCreated). */

@@ -242,6 +242,18 @@ export interface BatchUploadShared {
   target_duration_ms: number;
   /** Optional prefix; each project is titled "<prefix> — <filename>" when set. */
   titlePrefix?: string;
+  /** Default NL edit instruction for the auto dual-track edit route (WS3). Blank →
+   * the server's default template. Sent with EVERY file so the AI cut always runs. */
+  editInstruction?: string;
+}
+
+/** A shared batch id (WS6): one timestamp for all files in a batch upload, so they
+ * group under GET /batches/{id} and nest together in S3 under batch={id}/. */
+export function newBatchId(): string {
+  // e.g. batch-20260716T101530-4f2a (timestamp + short suffix for uniqueness).
+  const iso = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
+  const suffix = Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0');
+  return `batch-${iso}-${suffix}`;
 }
 
 /** One upload unit: a video paired with its chat-room LOG CSV, plus an optional
@@ -303,6 +315,9 @@ export async function runBatchUpload(
   // actually upload at once: 1 file → 6 parts, 2 → 3, 3+ → 2 (global stays ~6).
   const effectiveFiles = Math.max(1, Math.min(fileConcurrency, pairs.length));
   const partConcurrency = opts?.partConcurrency ?? Math.max(2, Math.floor(6 / effectiveFiles));
+  // One batch id shared by every file in this upload (WS6): groups the projects and
+  // nests their S3 sources under batch={id}/. Each file is still its own parallel run.
+  const batchId = newBatchId();
 
   return mapWithConcurrency(pairs, fileConcurrency, async (pair, index): Promise<BatchItemResult> => {
     if (opts?.signal?.aborted) {
@@ -320,6 +335,8 @@ export async function runBatchUpload(
         title,
         target_duration_ms: shared.target_duration_ms,
         analysis_source: 'chat',
+        edit_instruction: shared.editInstruction?.trim() || undefined,
+        batch_id: batchId,
       });
       const projectId = created.project_id;
       // Persist the 剪接指令 (drives the 指令版 track); blank → cleared → 模板.

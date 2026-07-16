@@ -70,8 +70,12 @@ log = logging.getLogger(__name__)
 # Cap transcript segments fed to the text moderator to bound Bedrock cost/latency.
 _MODERATION_TEXT_SEGMENT_CAP = 120
 
-# Raw key layout (demand.md §五/§十六): tenant={t}/project={p}/source/source.mp4
-_SOURCE_KEY_RE = re.compile(r"^tenant=(?P<tenant>[^/]+)/project=(?P<project>[^/]+)/source/")
+# Raw key layout (demand.md §五/§十六): tenant={t}/project={p}/source/source.mp4 —
+# or, for a batch upload (WS6), tenant={t}/batch={b}/project={p}/source/source.mp4.
+# The batch segment is optional; project_id is still the routing key either way.
+_SOURCE_KEY_RE = re.compile(
+    r"^tenant=(?P<tenant>[^/]+)/(?:batch=(?P<batch>[^/]+)/)?project=(?P<project>[^/]+)/source/"
+)
 
 
 def _project_id(event: dict[str, Any]) -> str:

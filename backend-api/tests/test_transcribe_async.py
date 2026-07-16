@@ -123,3 +123,17 @@ def test_starter_dedup_prefers_etag_over_v0(inmem) -> None:
 
     names = {e["name"] for e in orchestration.get_orchestrator().executions}
     assert names == {"project-etag-1-etagA", "project-etag-1-etagB"}
+
+
+def test_starter_parses_batch_nested_key(inmem) -> None:
+    """WS6: a batch-nested source key (tenant=/batch=/project=/source/) still routes
+    to the right project — the batch segment is optional in the starter regex."""
+    from app.settings import get_settings
+    from workers import lambda_handlers
+
+    _seed_project("project-batched-1")
+    key = get_settings().source_key("demo", "project-batched-1", batch_id="batch-x")
+    assert "/batch=batch-x/" in key
+    detail = {"detail": {"bucket": {"name": RAW}, "object": {"key": key, "version-id": "v1"}}}
+    out = lambda_handlers.starter({"Records": [{"messageId": "m", "body": json.dumps(detail)}]})
+    assert out["started"] and out["started"][0]["project_id"] == "project-batched-1"
