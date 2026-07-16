@@ -202,7 +202,7 @@ class FFmpegEncoder:
         # 特效套用（gated；預設關 → 離線/stub/既有測試不受影響）。
         apply_effects = _env_on("RENDER_APPLY_EFFECTS")
         effects_list: list[dict[str, Any]] = (inputs.effects or {}).get("effects", []) if apply_effects else []
-        fx_ctx = EffectContext(width=width, height=height, fps=fps)
+        fx_ctx = EffectContext(width=width, height=height, fps=fps, seed=int(spec.get("effect_seed", 0)))
 
         ff = _ffmpeg_bin()
         vf_norm = (

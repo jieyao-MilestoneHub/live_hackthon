@@ -32,7 +32,16 @@ def clip_effect_fragments(
         strategy = get_effect(effect.get("type", ""))
         if strategy is None:
             continue
-        fragment = strategy.fragment(effect, ctx)
+        # ranged 特效換算成 clip-local 毫秒（fragment 的時間窗運算式假設 t=0 為 clip 起點）；
+        # end_ms 夾在 clip 自己的長度內，避免時間窗跨到下一個 clip 的畫面範圍。
+        local_effect = effect
+        if "start_ms" in effect and "end_ms" in effect:
+            local_effect = {
+                **effect,
+                "start_ms": int(effect["start_ms"]) - tl_s,
+                "end_ms": min(int(effect["end_ms"]), tl_e) - tl_s,
+            }
+        fragment = strategy.fragment(local_effect, ctx)
         if fragment:
             frags.append(fragment)
     return frags
