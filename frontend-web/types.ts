@@ -458,6 +458,90 @@ export interface DownloadUrl {
   expires_in_sec?: number;
 }
 
+// --- Progress narration (progress.v1) — AI 即時進度旁白 -------------------
+// Sibling-branch feature (openapi 0.8.0): GET /projects/{id}/progress. The
+// backend narrator emits one zh-TW sentence per pipeline step (analysis AND
+// render sub-stages), so production is never a black box.
+
+/** One progress step's lifecycle within the feed. */
+export type ProgressStepStatus = 'RUNNING' | 'DONE' | 'FAILED';
+
+/** One AI-synthesized progress narration record (openapi: ProgressEvent / progress.v1). */
+export interface ProgressEvent {
+  schema_version: 'progress.v1';
+  progress_id: string;
+  project_id: string;
+  /** Machine-stable step code (StepKey), e.g. DETECTING_HIGHLIGHTS. */
+  step: string;
+  phase?: string | null;
+  status: ProgressStepStatus;
+  /** AI 統整的一句進度旁白（資訊量多但精簡）。 */
+  message: string;
+  created_at?: string;
+}
+
+/** GET /projects/{id}/progress response (openapi: ProgressView). */
+export interface ProgressView {
+  project_id: string;
+  latest?: ProgressEvent | null;
+  events: ProgressEvent[];
+}
+
+// --- Edit-plan readback (effects.v1 + subtitle.v1) -----------------------
+// GET /projects/{id}/edit-by-language/plan?render_id= reads back the actual
+// per-render plan for EITHER track (route=pipeline OR route=agent) — the raw
+// material for a "what this version did" summary.
+
+/** effects.v1 effect types (contracts/effects.v1.schema.json). */
+export type EffectType = 'zoom_in' | 'zoom_out' | 'pan' | 'shake' | 'flash_transition' | 'cut';
+
+/** One effect: ranged (zoom/pan/shake use start_ms/end_ms/strength) or point
+ * (flash_transition/cut use at_ms/duration_ms). */
+export interface EffectItem {
+  type: EffectType;
+  start_ms?: number;
+  end_ms?: number;
+  strength?: number;
+  at_ms?: number;
+  duration_ms?: number;
+}
+
+/** effects.v1 plan document. */
+export interface EffectPlan {
+  schema_version?: string;
+  effect_seed?: number;
+  project_id?: string;
+  render_id?: string;
+  effects: EffectItem[];
+}
+
+/** subtitle.v1 cue: caption = 逐字稿層；keyword = 爆點字（emphasis_words 動畫）。 */
+export interface SubtitleCue {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  kind?: 'caption' | 'keyword';
+  emphasis_words?: string[];
+  animation?: { type?: string; duration_ms?: number };
+}
+
+/** subtitle.v1 plan document. */
+export interface SubtitlePlan {
+  schema_version?: string;
+  language?: string;
+  project_id?: string;
+  render_id?: string;
+  style?: Record<string, unknown>;
+  cues: SubtitleCue[];
+}
+
+/** GET /projects/{id}/edit-by-language/plan response (EditPlan). */
+export interface EditPlan {
+  render_id: string;
+  effects?: EffectPlan | null;
+  subtitle?: SubtitlePlan | null;
+}
+
 /** Project states before the editor is usable — drive "processing" copy + polling. */
 export const PROCESSING_STATES: ReadonlySet<ProjectState> = new Set<ProjectState>([
   'CREATED',

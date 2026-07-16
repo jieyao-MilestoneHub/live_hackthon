@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
+  ALLOW_MOCK,
   ApiError,
   analyzeProject,
   composeTimeline,
@@ -42,7 +43,6 @@ import type {
   Project,
   Render,
   RenderCreated,
-  Route,
   Timeline,
   TimelineClip,
 } from '@/types';
@@ -51,11 +51,16 @@ import StageRail from '@/components/StageRail';
 import ModerationBanner from '@/components/ModerationBanner';
 import ScoreMeter from '@/components/ScoreMeter';
 import HighlightWave from '@/components/HighlightWave';
+import ProgressFeed from '@/components/ProgressFeed';
+import HighlightWhy from '@/components/HighlightWhy';
+import { ROUTE_LABEL } from '@/components/TrackSummaryCard';
+import { getEditIntent } from '@/lib/editIntent';
+import { readVideoDurationMs } from '@/lib/media';
 
 const POLL_INTERVAL_MS = 2000;
 
-/** 雙軌分流：下載鍵的路線標籤。 */
-const ROUTE_LABEL: Record<Route, string> = { pipeline: 'Pipeline 版', agent: 'AI Agent 版' };
+// ROUTE_LABEL (模板版 / 指令版) is shared with the batch dashboard — imported
+// from TrackSummaryCard so the two-track vocabulary stays consistent site-wide.
 
 const ASPECTS: AspectRatio[] = ['16:9', '9:16', '1:1'];
 const ASPECT_CSS: Record<AspectRatio, string> = {
@@ -111,27 +116,7 @@ function buildTimelineBody(
   return { body, actualMs: cursor };
 }
 
-/** Read an MP4's duration (ms) client-side via a hidden <video>; undefined on failure. */
-function readVideoDurationMs(file: File): Promise<number | undefined> {
-  return new Promise((resolve) => {
-    try {
-      const url = URL.createObjectURL(file);
-      const v = document.createElement('video');
-      v.preload = 'metadata';
-      v.onloadedmetadata = () => {
-        URL.revokeObjectURL(url);
-        resolve(Number.isFinite(v.duration) && v.duration > 0 ? Math.round(v.duration * 1000) : undefined);
-      };
-      v.onerror = () => {
-        URL.revokeObjectURL(url);
-        resolve(undefined);
-      };
-      v.src = url;
-    } catch {
-      resolve(undefined);
-    }
-  });
-}
+// readVideoDurationMs is shared with the batch uploader — imported from lib/media.
 
 // --- Upload region -------------------------------------------------------
 function UploadRegion({
@@ -462,6 +447,7 @@ function EditorRegions({
   }
 
   const total = actualMs || 1;
+  const editIntent = getEditIntent(project.project_id);
 
   return (
     <div className="editor">
@@ -531,6 +517,7 @@ function EditorRegions({
                 {h.end_ms} ms）
               </div>
               {h.reason && <p className="hlx__reason">{h.reason}</p>}
+              <HighlightWhy highlight={h} />
               <div className="hlx__foot">
                 <button
                   className="btn btn--ghost btn--sm"
@@ -736,6 +723,9 @@ function EditorRegions({
           <p className="hint">內容審核未通過，渲染／下載已鎖定，需管理員複核放行。</p>
         )}
 
+        {editIntent && (
+          <p className="hint cjk">指令版（AI Agent）依你的指令：<span className="grad">「{editIntent}」</span></p>
+        )}
         {saveMsg && <p className="note-ok">{saveMsg}</p>}
         {render && (
           <div className="render-status">
@@ -744,6 +734,7 @@ function EditorRegions({
               {render.status}
             </span>
             {render.current_stage && <span>· {render.current_stage}</span>}
+            {render.route && <span className="muted">· {ROUTE_LABEL[render.route]}</span>}
             {render.timeline_version != null && (
               <span className="muted">· timeline v{render.timeline_version}</span>
             )}
@@ -938,6 +929,7 @@ function ProjectView() {
           </div>
           <HighlightWave mode="scan" height={120} />
           <p className="hint mono">處理中 · 每 {POLL_INTERVAL_MS / 1000}s 自動更新狀態…</p>
+          <ProgressFeed projectId={projectId} active={phase.busy} demo={ALLOW_MOCK} />
         </div>
       )}
 

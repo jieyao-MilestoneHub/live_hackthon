@@ -1,10 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { createProject } from '@/lib/api';
 import HighlightWave from '@/components/HighlightWave';
-import BatchUploader from '@/components/BatchUploader';
+import BatchComposer from '@/components/BatchComposer';
 
 const MAX_TARGET_SEC = 60;
 const DEFAULT_TARGET_SEC = 30;
@@ -12,45 +10,26 @@ const DEFAULT_TARGET_SEC = 30;
 const RULER = ['0:00', '1:30', '3:00', '4:00', '5:30'];
 
 const STEPS = [
-  { t: '上傳原始影片', d: '瀏覽器以 presigned URL 直傳直播錄影至 S3，不經過伺服器。' },
-  { t: 'AI 分析高光並自動組片', d: '偵測情緒高峰，Composer 依目標秒數組出初始時間軸。' },
-  { t: '微調時間軸，一鍵渲染', d: '排序、鎖定、選字幕與特效比例，送出即輸出成品短片。' },
+  {
+    t: '批次配對上傳',
+    d: '每支影片一張需求卡：影片、選填聊天室 LOG、選填剪接指令，一次送多支。',
+  },
+  {
+    t: 'AI 分析 ＋ 雙軌渲染',
+    d: '一次分析找出情緒高峰，接著同時產出「模板版」與「指令版」兩支成品。',
+  },
+  {
+    t: '全程看得見',
+    d: '每一步都有 AI 進度旁白，成品各附「這版做了什麼」，不是黑盒子。',
+  },
 ];
 
 export default function LandingPage() {
-  const router = useRouter();
   const [title, setTitle] = useState('');
   const [targetSec, setTargetSec] = useState(DEFAULT_TARGET_SEC);
-  const [analysisSource, setAnalysisSource] = useState<'transcribe' | 'chat'>('transcribe');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const on = (n: number) => `reveal stagger-${n}`;
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    // Transcribe uses the inline BatchUploader; only the chat flow creates a
-    // single project here and routes to the paired video+CSV upload screen.
-    if (analysisSource !== 'chat') return;
-    if (targetSec < 1 || targetSec > MAX_TARGET_SEC) {
-      setError(`目標秒數需介於 1–${MAX_TARGET_SEC} 秒。`);
-      return;
-    }
-    setError(null);
-    setSubmitting(true);
-    try {
-      const created = await createProject({
-        title: title.trim() || undefined,
-        target_duration_ms: Math.round(targetSec * 1000),
-        analysis_source: analysisSource,
-      });
-      router.push(`/projects?id=${encodeURIComponent(created.project_id)}`);
-    } catch (err) {
-      console.error(err);
-      setError('建立專案失敗，請稍後再試。');
-      setSubmitting(false);
-    }
-  }
+  const targetMs = Math.round(Math.min(MAX_TARGET_SEC, Math.max(1, targetSec)) * 1000);
 
   return (
     <main className="shell page">
@@ -59,10 +38,10 @@ export default function LandingPage() {
         <h1 className={`hero__title cjk ${on(2)}`}>
           把<span className="grad">最猛的那幾秒</span>，
           <br />
-          剪成短片。
+          剪成兩版短片。
         </h1>
-        <p className={`lead ${on(3)}`} style={{ maxWidth: 560 }}>
-          上傳直播錄影，AI 找出情緒高峰、自動組出 60 秒內的精華，時間軸交給你微調。
+        <p className={`lead ${on(3)}`} style={{ maxWidth: 580 }}>
+          上傳直播錄影，AI 找出情緒高峰、自動組出 60 秒內的精華，並同時產出「模板版」與「依你指令客製的指令版」——每一步都看得見。
         </p>
 
         <div className={`${on(4)}`} style={{ marginTop: 32 }}>
@@ -79,98 +58,52 @@ export default function LandingPage() {
       </section>
 
       <div className="hero__grid">
-        {/* Create console */}
+        {/* Global settings for the whole batch */}
         <div className={`panel ${on(3)}`}>
           <div className="panel__head">
-            <span className="panel__title">開始一個新專案</span>
-            <span className="panel__eyebrow">NEW PROJECT</span>
+            <span className="panel__title">全批設定</span>
+            <span className="panel__eyebrow">BATCH SETTINGS</span>
           </div>
-          <form onSubmit={handleSubmit}>
-            <div className="field">
-              <label htmlFor="title">專案標題（選填）</label>
+          <div className="field">
+            <label htmlFor="title">專案標題前綴（選填）</label>
+            <input
+              id="title"
+              className="input"
+              type="text"
+              placeholder="例如：巔峰對決"
+              value={title}
+              maxLength={60}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+            <p className="hint">每支影片會命名為「前綴 — 檔名」。</p>
+          </div>
+
+          <div className="field">
+            <label htmlFor="target">目標秒數（1–{MAX_TARGET_SEC} 秒，套用到整批）</label>
+            <div className="row" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               <input
-                id="title"
-                className="input"
-                type="text"
-                placeholder="例如：巔峰對決精華"
-                value={title}
-                maxLength={80}
-                onChange={(e) => setTitle(e.target.value)}
+                id="target"
+                type="range"
+                min={1}
+                max={MAX_TARGET_SEC}
+                value={targetSec}
+                onChange={(e) => setTargetSec(Number(e.target.value))}
+                style={{ flex: 1 }}
+              />
+              <input
+                className="input num"
+                type="number"
+                min={1}
+                max={MAX_TARGET_SEC}
+                value={targetSec}
+                onChange={(e) => setTargetSec(Number(e.target.value))}
+                aria-label="目標秒數"
               />
             </div>
-
-            <div className="field">
-              <label>分析來源</label>
-              <div className="row" style={{ display: 'flex', gap: 8 }}>
-                <button
-                  type="button"
-                  className={`btn btn--sm ${analysisSource === 'transcribe' ? '' : 'btn--ghost'}`}
-                  onClick={() => setAnalysisSource('transcribe')}
-                  style={{ flex: 1 }}
-                  aria-pressed={analysisSource === 'transcribe'}
-                >
-                  影片語音 · Transcribe
-                </button>
-                <button
-                  type="button"
-                  className={`btn btn--sm ${analysisSource === 'chat' ? '' : 'btn--ghost'}`}
-                  onClick={() => setAnalysisSource('chat')}
-                  style={{ flex: 1 }}
-                  aria-pressed={analysisSource === 'chat'}
-                >
-                  聊天室 LOG · 彈幕熱度
-                </button>
-              </div>
-              <p className="hint">
-                {analysisSource === 'chat'
-                  ? '需同時上傳影片與聊天室 LOG CSV；高光取自彈幕熱度峰值。'
-                  : '上傳影片後自動轉逐字稿，偵測語音情緒高峰。可一次批次上傳多支影片。'}
-              </p>
-            </div>
-
-            <div className="field">
-              <label htmlFor="target">目標秒數（1–{MAX_TARGET_SEC} 秒）</label>
-              <div className="row" style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                <input
-                  id="target"
-                  type="range"
-                  min={1}
-                  max={MAX_TARGET_SEC}
-                  value={targetSec}
-                  onChange={(e) => setTargetSec(Number(e.target.value))}
-                  style={{ flex: 1 }}
-                />
-                <input
-                  className="input num"
-                  type="number"
-                  min={1}
-                  max={MAX_TARGET_SEC}
-                  value={targetSec}
-                  onChange={(e) => setTargetSec(Number(e.target.value))}
-                  aria-label="目標秒數"
-                />
-              </div>
-              <p className="hint">
-                = <span className="mono">{Math.round(targetSec * 1000)}</span> ms（契約以毫秒為單位）
-              </p>
-            </div>
-
-            {analysisSource === 'chat' ? (
-              <>
-                <button type="submit" className="btn btn--lg btn--block" disabled={submitting}>
-                  {submitting ? '建立中…' : '建立並前往上傳 ▸'}
-                </button>
-                {error && <p className="error">{error}</p>}
-              </>
-            ) : (
-              <BatchUploader
-                targetDurationMs={Math.round(
-                  Math.min(MAX_TARGET_SEC, Math.max(1, targetSec)) * 1000,
-                )}
-                titlePrefix={title.trim() || undefined}
-              />
-            )}
-          </form>
+            <p className="hint">
+              = <span className="mono">{targetMs}</span> ms（契約以毫秒為單位）
+            </p>
+          </div>
         </div>
 
         {/* How it works — a real 3-step sequence */}
@@ -191,6 +124,10 @@ export default function LandingPage() {
             ))}
           </div>
         </div>
+      </div>
+
+      <div className={on(4)} style={{ marginTop: 20 }}>
+        <BatchComposer targetDurationMs={targetMs} titlePrefix={title.trim() || undefined} />
       </div>
     </main>
   );

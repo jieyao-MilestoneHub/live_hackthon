@@ -19,11 +19,13 @@ import type {
   ChatUploadUrl,
   ComposeRequest,
   DownloadUrl,
+  EditPlan,
   HighlightList,
   ModerationView,
   Project,
   ProjectCreate,
   ProjectCreated,
+  ProgressView,
   Render,
   RenderCreated,
   Route,
@@ -40,8 +42,10 @@ import {
   markMockAnalysisStart,
   mockCreateRender,
   mockDownloadUrl,
+  mockEditPlan,
   mockListArtifacts,
   mockHighlightList,
+  mockProgress,
   mockProject,
   mockProjectStatusFor,
   mockRender,
@@ -581,5 +585,47 @@ export async function getDownloadUrl(artifactId: string): Promise<DownloadUrl> {
     if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] getDownloadUrl fell back to mock:', err);
     return mockDownloadUrl(artifactId);
+  }
+}
+
+/**
+ * GET /projects/{id}/progress — the AI 即時進度旁白 feed (oldest→newest).
+ *
+ * Sibling-branch endpoint: not on this branch's backend yet. A real deployment
+ * that lacks it returns 404 → we surface an EMPTY view (the feed simply renders
+ * nothing) rather than erroring. Offline/local dev synthesizes a stepping demo
+ * feed via mockProgress so the transparency UX is fully demoable.
+ */
+export async function getProgress(projectId: string): Promise<ProgressView> {
+  try {
+    return await request<ProgressView>(
+      `/projects/${encodeURIComponent(projectId)}/progress`,
+    );
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      // Endpoint not deployed on this backend — degrade quietly (no feed).
+      return { project_id: projectId, events: [] };
+    }
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
+    console.warn('[api] getProgress fell back to demo feed:', err);
+    return mockProgress(projectId);
+  }
+}
+
+/**
+ * GET /projects/{id}/edit-by-language/plan?render_id= — read back the actual
+ * effects.v1 + subtitle.v1 plan for a render. Works for BOTH tracks (pipeline
+ * and agent render ids). Not yet in the OpenAPI contract; 404 → null (no card).
+ */
+export async function getEditPlan(projectId: string, renderId: string): Promise<EditPlan | null> {
+  try {
+    return await request<EditPlan>(
+      `/projects/${encodeURIComponent(projectId)}/edit-by-language/plan?render_id=${encodeURIComponent(renderId)}`,
+    );
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
+    console.warn('[api] getEditPlan fell back to mock:', err);
+    return mockEditPlan(projectId, renderId);
   }
 }
