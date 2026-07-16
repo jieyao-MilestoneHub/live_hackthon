@@ -64,7 +64,17 @@ def run(
             chatlog = None
         annotations = build_annotations(highlights, chatlog, project_id=project_id)
 
-    result = run_refine(highlights, annotations, transcript, narrative_reviewer=narrative_reviewer)
+    # 只有在高光時基與影片相對逐字稿一致時才提議 offset。聊天相對高光（signal=chat_volume
+    # 且 Project 尚未解析出 video_start_epoch_ms → 換算為 -chattime 相對）與影片逐字稿基準不同，
+    # 提議 offset 會把高光硬拽到錯的位置，故 skip（仍做敘事精修）。
+    chat_derived = any(h.get("signal") == "chat_volume" for h in highlights)
+    timebase_resolved = project.get("video_start_epoch_ms") is not None
+    propose_offsets = not (chat_derived and not timebase_resolved)
+
+    result = run_refine(
+        highlights, annotations, transcript,
+        narrative_reviewer=narrative_reviewer, propose_offsets=propose_offsets,
+    )
     storage.put_json(settings.work_bucket, settings.annotations_key(tenant, project_id), result["annotations"])
 
     applied = 0

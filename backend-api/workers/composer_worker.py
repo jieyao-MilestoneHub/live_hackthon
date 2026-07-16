@@ -42,10 +42,15 @@ def run(
     target_ms = int(target) if target is not None else int(project["target_duration_ms"])
     version = int(project.get("latest_timeline_version") or 0) + 1
 
-    # 起承轉合節拍：由 highlights 就地產生 annotations（chat_window 訊號會對齊 punchline），
-    # 供 NarrativeBeat 策略保埋梗+爆梗、不砍爆點。無 chatlog 時 chat_highlights 留言省略、
-    # beats 仍成立（compose 只需 beats）。
-    annotations = build_annotations(highlights, project_id=project_id)
+    # 起承轉合節拍：只有當高光帶「真訊號」(chat_window＝觀眾反應尖峰) 時，才產 annotations
+    # 驅動 NarrativeBeat 拆段（punchline 依訊號對齊）。逐字稿路徑的高光沒有 chat_window，
+    # build_annotations 會退回「固定比例切分（punchline=最後 20%）」——而高光尾端有 3 秒
+    # padding_after，最後 20% 常落在內容結束後的死空氣，NarrativeBeat 又會「保尾、捨中段」而
+    # 砍掉真正的爆點。故無訊號時傳 annotations=None → default_planner 退回 ScoreGreedyPlanner
+    # （保完整高光、前段裁切保尾段 payoff），避免假結構驅動裁切。keyword 字幕另在 creative_worker
+    # 就地建 annotations，不受此影響。
+    has_punch_signal = any(h.get("chat_window") for h in highlights)
+    annotations = build_annotations(highlights, project_id=project_id) if has_punch_signal else None
 
     timeline = compose_timeline(
         project_id=project_id,

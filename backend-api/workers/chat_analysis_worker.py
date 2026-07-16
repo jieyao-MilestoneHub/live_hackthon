@@ -75,5 +75,8 @@ def run(
     updates: dict[str, Any] = {"status": ProjectState.COMPOSING.value}
     if not fallback:
         updates["source_duration_ms"] = result["source_duration_ms"]
+        # Persist the resolved anchor so downstream consumers (refine offsets,
+        # re-compose) know the highlights are video-relative, not -chattime.
+        updates["video_start_epoch_ms"] = int(vs)
     repo.update_project(project_id, updates)
     return result
