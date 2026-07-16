@@ -52,11 +52,13 @@ import ModerationBanner from '@/components/ModerationBanner';
 import ProgressFeed from '@/components/ProgressFeed';
 import ScoreMeter from '@/components/ScoreMeter';
 import HighlightWave from '@/components/HighlightWave';
+import HighlightWhy from '@/components/HighlightWhy';
+import { getEditIntent } from '@/lib/editIntent';
 
 const POLL_INTERVAL_MS = 2000;
 
 /** 雙軌分流：下載鍵的路線標籤。 */
-const ROUTE_LABEL: Record<Route, string> = { pipeline: 'Pipeline 版', agent: 'AI Agent 版' };
+const ROUTE_LABEL: Record<Route, string> = { pipeline: '模板版', agent: '指令版' };
 
 const ASPECTS: AspectRatio[] = ['16:9', '9:16', '1:1'];
 const ASPECT_CSS: Record<AspectRatio, string> = {
@@ -499,6 +501,7 @@ function EditorRegions({
   }
 
   const total = actualMs || 1;
+  const editIntent = getEditIntent(project.project_id);
   // While previewing, letterbox the frame to the rendered artifact's real aspect;
   // otherwise follow the pre-render aspect segmented control.
   const previewArtifact = artifacts.find((a) => a.artifact_id === previewArtifactId) ?? null;
@@ -606,6 +609,7 @@ function EditorRegions({
                 {h.end_ms} ms）
               </div>
               {h.reason && <p className="hlx__reason">{h.reason}</p>}
+              <HighlightWhy highlight={h} />
               <div className="hlx__foot">
                 <button
                   className="btn btn--ghost btn--sm"
@@ -811,6 +815,9 @@ function EditorRegions({
           <p className="hint">內容審核未通過，渲染／下載已鎖定，需管理員複核放行。</p>
         )}
 
+        {editIntent && (
+          <p className="hint cjk">指令版（AI Agent）依你的指令：<span className="grad">「{editIntent}」</span></p>
+        )}
         {saveMsg && <p className="note-ok">{saveMsg}</p>}
         {render && (
           <div className="render-status">
