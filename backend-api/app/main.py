@@ -209,6 +209,9 @@ def create_project(
         "source_bucket": settings.raw_bucket,
         "source_key": source_key,
         "latest_timeline_version": 0,
+        # Default NL instruction for the auto dual-track edit route (mark_ready /
+        # chat_starter read it). None → the pipeline uses DEFAULT_EDIT_INSTRUCTION.
+        "edit_instruction": body.edit_instruction,
     }
     try:
         repo.create_project(item)

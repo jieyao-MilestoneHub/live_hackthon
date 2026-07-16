@@ -57,26 +57,8 @@ resource "aws_sqs_queue_policy" "intake" {
   policy    = data.aws_iam_policy_document.intake_policy.json
 }
 
-# --- SQS: ai-task (+DLQ) — §十九 -------------------------------------------
-# Consumer = the ai-task-render Lambda (edit-by-language ffmpeg encode, module
-# ai-task-render). visibility_timeout MUST be >= that Lambda's timeout (900) or
-# SQS redelivers mid-encode → duplicate work (the consumer is idempotent, but a
-# redelivery still wastes an invocation).
-resource "aws_sqs_queue" "ai_task_dlq" {
-  name                      = "${var.name}-ai-task-dlq"
-  message_retention_seconds = 1209600
-  tags                      = var.tags
-}
-
-resource "aws_sqs_queue" "ai_task" {
-  name                       = "${var.name}-ai-task"
-  visibility_timeout_seconds = 960 # >= ai-task-render Lambda timeout (900)
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.ai_task_dlq.arn
-    maxReceiveCount     = 5
-  })
-  tags = var.tags
-}
+# (Removed: the ai-task SQS queue + DLQ. The edit route no longer uses a separate
+# ffmpeg-in-Lambda encoder — it renders through the render SFN → Batch. See WS3.)
 
 # --- EventBridge: S3 raw source/ ObjectCreated → intake queue --------------
 # Enable S3 → EventBridge for the raw bucket (only one notification per bucket;
@@ -352,6 +334,11 @@ resource "aws_lambda_function" "chat_starter" {
 resource "aws_lambda_event_source_mapping" "chat_starter" {
   event_source_arn = aws_sqs_queue.chat_intake.arn
   function_name    = aws_lambda_function.chat_starter.arn
-  batch_size       = 1
+  batch_size       = 5
   enabled          = true
+
+  # Partial-batch (WS4): chat_starter returns {"batchItemFailures": [...]} so only
+  # a failing record is re-driven, not the whole batch. Lets batch_size rise above
+  # 1 without an error re-running its neighbours.
+  function_response_types = ["ReportBatchItemFailures"]
 }

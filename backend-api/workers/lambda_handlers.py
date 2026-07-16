@@ -44,6 +44,7 @@ from app.state import (
 from app.storage import get_storage
 from app.video_timebase import extract_creation_epoch_ms
 from creative import DUAL_TRACK_ROUTES
+from app.edit_planning import DEFAULT_EDIT_INSTRUCTION, kickoff_dual_track
 from workers import (
     analysis_worker,
     chat_analysis_worker,
@@ -54,14 +55,13 @@ from workers import (
 
 
 def _dual_track_routes() -> tuple[str, ...]:
-    """雙軌分流 routes：DUAL_TRACK **預設 off**（只跑 pipeline）；顯式設 on 才加 agent 路線。
+    """雙軌分流 routes：**預設雙軌**（pipeline + edit 各出一支 artifact，分析後自動並行）。
 
-    預設 off 的理由：``AgentPlanner`` 目前是 fail-open 佔位（委派 pipeline），預設開會讓部署後
-    自動吐出一份「看似 agent、實為 pipeline 換種子」的誤導性成品。待 agent worktree 以
-    ``register_planner("agent", RealAgentPlanner())`` 注入真正的 agent 後，於其 infra 設
-    ``DUAL_TRACK=on`` 即啟用；planner-registry seam 本檔不需再改。
+    edit 路線已是真的 AI 剪接路線（``EDIT_PLANNER_LLM=1`` → Claude on Bedrock；否則確定性
+    Stub），走同一條 render SFN → Batch，故預設開啟不會產生誤導性成品。逃生：設
+    ``DUAL_TRACK`` 為 off/pipeline 只跑 pipeline（demo 若要省算力/關 edit 路線時用）。
     """
-    if os.environ.get("DUAL_TRACK", "off").strip().lower() in {"0", "false", "off", "no"}:
+    if os.environ.get("DUAL_TRACK", "on").strip().lower() in {"0", "false", "off", "no", "pipeline"}:
         return ("pipeline",)
     return DUAL_TRACK_ROUTES
 
@@ -319,11 +319,22 @@ def moderation_decision(event: dict[str, Any], context: Any = None) -> dict[str,
     )
     status = decision["status"]
     note = None
-    # Fail-safe: if the text scan errored and nothing else flagged it, escalate to
-    # FLAGGED (needs human review) rather than silently ALLOWED.
-    if text_error and status == ModerationStatus.ALLOWED.value:
-        status = ModerationStatus.FLAGGED.value
-        note = "text scan unavailable; flagged for manual review"
+    # Fail-safe (both scans): a scan that did NOT complete cleanly must never let
+    # content through as ALLOWED. The visual side is only trustworthy on a COMPLETED
+    # Rekognition job — FAILED (job error) or SKIPPED (start failed) means we did NOT
+    # actually inspect the video, so escalate to FLAGGED for human review instead of
+    # silently publishing. Same for a Bedrock text-scan error. If the pure policy
+    # already FLAGGED/BLOCKED on a real hit we keep that verdict.
+    visual_scan_failed = visual.get("status") != "COMPLETED"
+    if status == ModerationStatus.ALLOWED.value:
+        reasons = []
+        if text_error:
+            reasons.append("text scan unavailable")
+        if visual_scan_failed:
+            reasons.append("visual scan unavailable")
+        if reasons:
+            status = ModerationStatus.FLAGGED.value
+            note = "; ".join(reasons) + "; flagged for manual review"
 
     _persist_moderation(
         project_id, tenant_id, status,
@@ -494,7 +505,12 @@ def compose_timeline(event: dict[str, Any], context: Any = None) -> dict[str, An
 
 
 def mark_ready(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """Explicit terminal (composer already set READY_TO_EDIT) for observability."""
+    """Terminal READY_TO_EDIT + auto dual-track: fire the pipeline + edit renders in
+    parallel (each its own render SFN execution → one artifact per route) when
+    moderation permits publishing. A FLAGGED project stays an editable draft awaiting
+    a moderator override (no auto-render). No-op auto-render when the render plane is
+    not wired (RENDER_STATE_MACHINE_ARN unset — offline/tests). Also narrates the
+    READY step for observability (best-effort; additive)."""
     project_id = _project_id(event)
     clips = None
     try:
@@ -506,7 +522,25 @@ def mark_ready(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         project_id, StepKey.READY, phase=ProjectState.READY_TO_EDIT.value,
         facts={"clips": clips}, status="DONE",
     )
-    return {"project_id": project_id, "status": ProjectState.READY_TO_EDIT.value}
+
+    project = _require_project(project_id)
+    result: dict[str, Any] = {"project_id": project_id, "status": ProjectState.READY_TO_EDIT.value}
+
+    if not os.environ.get("RENDER_STATE_MACHINE_ARN"):
+        return result  # render plane not wired → leave as an editable draft
+    mod_status = project.get("moderation_status")
+    if not moderation_allows_publish(mod_status):
+        log.info("mark_ready: project %s moderation=%s; ready, awaiting review before auto-render",
+                 project_id, mod_status)
+        return result
+
+    tv = int(project.get("latest_timeline_version") or 0)
+    instruction = project.get("edit_instruction") or DEFAULT_EDIT_INSTRUCTION
+    result["renders"] = kickoff_dual_track(
+        get_repository(), get_storage(), project_id,
+        timeline_version=tv, instruction=instruction, routes=_dual_track_routes(),
+    )
+    return result
 
 
 def mark_blocked(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
@@ -550,13 +584,21 @@ def mark_failed(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
 def plan_creative(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
     """Render SFN stage: Creative Planning (subtitle.v1 / effects.v1 /
     render_spec.v1 to the work bucket), advancing the render to QUEUED. The
-    heavy FFmpeg encode runs next in the Batch container (workers.render)."""
+    heavy FFmpeg encode runs next in the Batch container (workers.render).
+
+    SKIP for a render that is already planned (the edit route pre-plans via
+    ``plan_edit_render`` before StartExecution): both routes share this render SFN,
+    but only the pipeline route needs planning here."""
     repo = get_repository()
     storage = get_storage()
     project_id = _project_id(event)
     render_id = event.get("render_id")
     if not render_id:
         raise ValueError("event missing render_id")
+    existing = repo.get_render(project_id, render_id)
+    if existing and existing.get("render_spec_key"):
+        # Already planned (edit route) → don't re-plan/overwrite; go straight to Batch.
+        return {"project_id": project_id, "render_id": render_id, "status": existing["status"]}
     render = creative_worker.run(repo, storage, project_id, render_id)
     return {"project_id": project_id, "render_id": render_id, "status": render["status"]}
 
@@ -617,6 +659,13 @@ def starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             obj = detail.get("object") or {}
             key = obj.get("key")
             version_id = obj.get("version-id") or obj.get("versionId")
+            # Idempotency token for the SFN execution name. Prefer the S3 object
+            # version-id (raw bucket versioning is on → unique per upload); fall back
+            # to the object etag then the event sequencer. This makes a genuine
+            # re-upload (new object → new etag/sequencer) start a FRESH run, while
+            # true duplicate SQS deliveries (identical etag/sequencer) still collapse
+            # to one run. The old `v0` fallback silently swallowed re-uploads.
+            dedup_key = version_id or obj.get("etag") or obj.get("sequencer")
             parsed = _parse_source_key(key)
             if not parsed:
                 continue
@@ -635,19 +684,18 @@ def starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
                     project_id,
                 )
                 continue
-            if not version_id:
-                # Raw bucket versioning should always supply version-id; without it
-                # the execution name falls back to '{project_id}-v0', so a later
-                # re-upload to the same project would be swallowed as a duplicate
-                # rather than re-analyzed.
+            if not dedup_key:
+                # version-id + etag + sequencer all absent is not expected for a real
+                # S3 EventBridge event; without any token we cannot dedup a re-upload.
                 log.warning(
-                    "starter: missing version_id for project %s (key=%s); "
+                    "starter: no version-id/etag/sequencer for project %s (key=%s); "
                     "re-upload dedupe may swallow a future run",
                     project_id,
                     key,
                 )
             exec_arn = orchestration.start_analysis(
-                project_id, tenant_id=tenant_id, bucket=bucket, key=key, version_id=version_id
+                project_id, tenant_id=tenant_id, bucket=bucket, key=key,
+                version_id=version_id, dedup_key=dedup_key,
             )
             started.append({"project_id": project_id, "execution_arn": exec_arn})
         except Exception:  # noqa: BLE001 — isolate one bad record from the batch
@@ -663,202 +711,169 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
     artifact: auto-create the project if missing → clean → analyze (chat volume) →
     compose → StartExecution the render workflow. Idempotent: skips a project that
     is already past the pre-analysis states."""
-    settings = get_settings()
     repo = get_repository()
-    storage = get_storage()
     started: list[dict[str, Any]] = []
+    # Partial-batch (aligns with `starter`; the chat mapping sets
+    # ReportBatchItemFailures): a transient exception in one record re-drives ONLY
+    # that record, not the whole batch. Permanent business errors (unparseable key /
+    # 0 messages / already-processed / BLOCKED) are handled inside and are NOT
+    # reported as failures — retrying them would never succeed.
+    failures: list[dict[str, str]] = []
     for record in event.get("Records", []):
-        body = record.get("body")
-        detail = json.loads(body) if isinstance(body, str) else (body or {})
-        detail = detail.get("detail", detail)  # unwrap EventBridge envelope
-        bucket = (detail.get("bucket") or {}).get("name") or settings.raw_bucket
-        key = (detail.get("object") or {}).get("key")
-        parsed = _parse_source_key(key or "")
-        if not parsed:
-            log.warning("chat_starter: unparseable key %s", key)
-            continue
-        tenant_id, project_id = parsed
-
-        project = repo.get_project(project_id)
-        if project is None:
-            # Auto-create so a pure S3 drop (no prior POST /projects) works.
-            target = int(os.environ.get("CHAT_TARGET_DURATION_MS", "30000"))
-            repo.create_project({
-                "project_id": project_id,
-                "tenant_id": tenant_id,
-                "user_id": "s3-auto",
-                "title": None,
-                "status": ProjectState.CREATED.value,
-                "target_duration_ms": target,
-                "analysis_source": "chat",
-                "source_bucket": bucket,
-                "source_key": settings.source_key(tenant_id, project_id),
-                "latest_timeline_version": 0,
-            })
-            project = repo.get_project(project_id)
-
-        status = ProjectState(project["status"])
-        if status not in (
-            ProjectState.CREATED, ProjectState.UPLOAD_PENDING,
-            ProjectState.UPLOADING, ProjectState.ANALYZING,
-        ):
-            log.info("chat_starter: project %s already at %s; skip", project_id, status.value)
-            continue
-
-        # 1) chat.csv → chatlog.v1 (work bucket)
-        csv_bytes = storage.get_bytes(bucket, key)
-        chatlog = clean_chatlog(
-            csv_bytes.decode("utf-8-sig", errors="replace"),
-            project_id,
-            source={"bucket": bucket, "key": key},
-        )
-        if not chatlog["messages"]:
-            log.warning("chat_starter: 0 chat messages parsed for %s (key=%s)", project_id, key)
-            repo.update_project(project_id, {
-                "status": ProjectState.FAILED.value,
-                "error_message": "no chat messages parsed from chat.csv",
-            })
-            continue
-        storage.put_json(settings.work_bucket, settings.chatlog_key(tenant_id, project_id), chatlog)
-        get_progress_reporter().step(
-            project_id, StepKey.ANALYZING_CHATLOG, phase=ProjectState.ANALYZING.value,
-            facts={"inputs": ["聊天室 LOG"], "signals": ["情緒起伏", "洗版熱區"],
-                   "messages": len(chatlog["messages"])},
-        )
-
-        # 1b) content moderation (text) — chat runs inline (no analysis SFN), so
-        # scan chat messages here. BLOCKED stops the pipeline before analysis.
-        mod_status = _moderate_chat_text(project_id, tenant_id, chatlog["messages"])
-        get_progress_reporter().step(
-            project_id, StepKey.MODERATION_DECISION, phase=ProjectState.ANALYZING.value,
-            facts={"inputs": ["聊天訊息"], "analysis": "內容合規判定", "verdict": mod_status},
-        )
-        if mod_status == ModerationStatus.BLOCKED.value:
-            repo.update_project(project_id, {
-                "status": ProjectState.FAILED.value,
-                "error_code": "MODERATION_BLOCKED",
-                "error_message": "內容審核未通過（已封鎖）",
-            })
-            log.info("chat_starter: project %s blocked by moderation; skip", project_id)
-            started.append({"project_id": project_id, "status": ModerationStatus.BLOCKED.value})
-            continue
-
-        # 2a) video timebase: extract the MP4 creation_time so chat highlights align
-        #     to video 0:00. The chat LOG carries only wall-clock epoch (c.at) with no
-        #     video-start anchor, so creation_time is the ONLY reliable bridge; without
-        #     it the fallback would cut source.mp4 relative to the first chat message
-        #     (off by the pre-show gap Δ) → the wrong moment gets clipped.
-        vs_epoch = _extract_and_store_timebase(
-            repo, storage, settings, project,
-            chat_started_epoch_ms=chatlog.get("started_at_epoch_ms"),
-        )
-        if vs_epoch is None and settings.require_video_timebase and not settings.use_inmemory:
-            # Fail-safe: don't ship a mis-timed artifact cut against a fabricated
-            # chat-relative timebase. Block; the editor can set it via PUT video-timebase.
-            repo.update_project(project_id, {
-                "status": ProjectState.FAILED.value,
-                "error_code": "MISSING_VIDEO_TIMEBASE",
-                "error_message": "影片缺少 creation_time 時基，無法將聊天高光對齊影片；"
-                                 "請以 PUT /projects/{id}/video-timebase 提供，或改用逐字稿分析。",
-            })
-            log.warning("chat_starter: project %s missing video timebase; blocked (fail-safe)", project_id)
-            started.append({"project_id": project_id, "status": "MISSING_VIDEO_TIMEBASE"})
-            continue
-
-        # 2b) analyze → COMPOSING. With a resolved timebase the chat highlights are
-        #     video-relative; without one (offline/stub, or the require flag off) the
-        #     worker marks the output -chattime (explicit chat-relative fallback).
-        advance_to_analyzing(repo, project_id, ProjectState(repo.get_project(project_id)["status"]))
-        result = chat_analysis_worker.run(repo, project_id, chatlog, video_start_epoch_ms=vs_epoch)
-        get_progress_reporter().step(
-            project_id, StepKey.DETECTING_HIGHLIGHTS, phase=ProjectState.COMPOSING.value,
-            facts={"inputs": ["聊天室熱度", "情緒反應"], "signals": ["情緒轉折", "聊天室熱度"],
-                   "found": len(result["highlights"])},
-        )
-
-        # 3) compose → READY_TO_EDIT (+ persist timeline for the render plane)
-        timeline = composer_worker.run(repo, project_id)
-        storage.put_json(
-            settings.work_bucket,
-            settings.timeline_key(tenant_id, project_id, timeline["version"]),
-            timeline,
-        )
-        get_progress_reporter().step(
-            project_id, StepKey.COMPOSING, phase=ProjectState.COMPOSING.value,
-            facts={"beats": "起承轉合", "clips": len(timeline.get("clips", []) or []),
-                   "analysis": "編排初剪時間軸"},
-        )
-
-        # 4) render: only auto-render when moderation permits publishing. A FLAGGED
-        # chat project composes (editable) but waits for a moderator override before
-        # it can render/download. When publishing IS allowed, 雙軌分流—each route gets
-        # its own render record + StartExecution (route 掛在 render item 上供 plan_creative
-        # 選規劃器；DUAL_TRACK 預設 off → 單一 pipeline)。
-        if moderation_allows_publish(mod_status):
-            for route in _dual_track_routes():
-                render = creative_worker.create_render_record(
-                    repo, project_id, timeline["version"], route=route
-                )
-                exec_arn = orchestration.start_render(render["render_id"], project_id, timeline["version"])
-                started.append({
-                    "project_id": project_id,
-                    "render_id": render["render_id"],
-                    "route": route,
-                    "execution_arn": exec_arn,
-                    "highlight_count": len(result["highlights"]),
-                })
-        else:
-            log.info("chat_starter: project %s moderation=%s; composed, awaiting review before render",
-                     project_id, mod_status)
-            started.append({
-                "project_id": project_id,
-                "status": mod_status,
-                "highlight_count": len(result["highlights"]),
-            })
-    return {"started": started}
+        message_id = record.get("messageId")
+        try:
+            _process_chat_record(record, get_settings(), repo, get_storage(), started)
+        except Exception:  # noqa: BLE001 — isolate one bad record from the batch
+            log.exception("chat_starter: record %s failed; will be retried", message_id)
+            if message_id:
+                failures.append({"itemIdentifier": message_id})
+    return {"started": started, "batchItemFailures": failures}
 
 
-def ai_task_render(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """SQS handler for the ai-task lane (edit-by-language encode).
+def _process_chat_record(
+    record: dict[str, Any], settings, repo, storage, started: list[dict[str, Any]]
+) -> None:
+    """Run the full chat pipeline for ONE SQS record (auto-create → clean → analyze
+    → compose → StartExecution render). Returns on a handled/permanent condition;
+    raises on a transient failure so chat_starter can report it for redrive."""
+    body = record.get("body")
+    detail = json.loads(body) if isinstance(body, str) else (body or {})
+    detail = detail.get("detail", detail)  # unwrap EventBridge envelope
+    bucket = (detail.get("bucket") or {}).get("name") or settings.raw_bucket
+    key = (detail.get("object") or {}).get("key")
+    parsed = _parse_source_key(key or "")
+    if not parsed:
+        log.warning("chat_starter: unparseable key %s", key)
+        return
+    tenant_id, project_id = parsed
 
-    Each record body is ``{"task":"render","render_id":...,"project_id":...}``
-    put on the queue by ``orchestration.enqueue_ai_task`` from the sidecar. Runs
-    the real FFmpeg encode (this Lambda sets ``RENDER_ENCODER=ffmpeg``) via the
-    SAME ``render_worker.run`` the Batch path uses — the plan (effects.v1 /
-    subtitle.v1) was already written to the work bucket by the sidecar.
-
-    Idempotent (SQS is at-least-once): a redelivered message for an already-
-    SUCCEEDED render is a no-op instead of tripping ``render_worker._advance``'s
-    state-transition assert."""
-    repo = get_repository()
-    storage = get_storage()
-    done: list[dict[str, Any]] = []
-    for record in event.get("Records", []):
-        body = record.get("body")
-        payload = json.loads(body) if isinstance(body, str) else (body or {})
-        if payload.get("task") not in (None, "render"):
-            log.info("ai_task_render: skipping task=%s", payload.get("task"))
-            continue
-        project_id = payload.get("project_id")
-        render_id = payload.get("render_id")
-        if not project_id or not render_id:
-            log.warning("ai_task_render: record missing project_id/render_id: %s", payload)
-            continue
-
-        render = repo.get_render(project_id, render_id)
-        if render is None:
-            log.warning("ai_task_render: render %s not found for %s", render_id, project_id)
-            continue
-        if render.get("status") == RenderState.SUCCEEDED.value:
-            log.info("ai_task_render: render %s already SUCCEEDED; skip (idempotent)", render_id)
-            done.append({"render_id": render_id, "status": "SUCCEEDED", "skipped": True})
-            continue
-
-        artifact = render_worker.run(repo, storage, project_id, render_id)
-        done.append({
-            "render_id": render_id,
+    project = repo.get_project(project_id)
+    if project is None:
+        # Auto-create so a pure S3 drop (no prior POST /projects) works.
+        target = int(os.environ.get("CHAT_TARGET_DURATION_MS", "30000"))
+        repo.create_project({
             "project_id": project_id,
-            "artifact_id": artifact["artifact_id"],
-            "status": "SUCCEEDED",
+            "tenant_id": tenant_id,
+            "user_id": "s3-auto",
+            "title": None,
+            "status": ProjectState.CREATED.value,
+            "target_duration_ms": target,
+            "analysis_source": "chat",
+            "source_bucket": bucket,
+            "source_key": settings.source_key(tenant_id, project_id),
+            "latest_timeline_version": 0,
         })
-    return {"rendered": done}
+        project = repo.get_project(project_id)
+
+    status = ProjectState(project["status"])
+    if status not in (
+        ProjectState.CREATED, ProjectState.UPLOAD_PENDING,
+        ProjectState.UPLOADING, ProjectState.ANALYZING,
+    ):
+        log.info("chat_starter: project %s already at %s; skip", project_id, status.value)
+        return
+
+    # 1) chat.csv → chatlog.v1 (work bucket)
+    csv_bytes = storage.get_bytes(bucket, key)
+    chatlog = clean_chatlog(
+        csv_bytes.decode("utf-8-sig", errors="replace"),
+        project_id,
+        source={"bucket": bucket, "key": key},
+    )
+    if not chatlog["messages"]:
+        log.warning("chat_starter: 0 chat messages parsed for %s (key=%s)", project_id, key)
+        repo.update_project(project_id, {
+            "status": ProjectState.FAILED.value,
+            "error_message": "no chat messages parsed from chat.csv",
+        })
+        return
+    storage.put_json(settings.work_bucket, settings.chatlog_key(tenant_id, project_id), chatlog)
+    get_progress_reporter().step(
+        project_id, StepKey.ANALYZING_CHATLOG, phase=ProjectState.ANALYZING.value,
+        facts={"inputs": ["聊天室 LOG"], "signals": ["情緒起伏", "洗版熱區"],
+               "messages": len(chatlog["messages"])},
+    )
+
+    # 1b) content moderation (text) — chat runs inline (no analysis SFN), so
+    # scan chat messages here. BLOCKED stops the pipeline before analysis.
+    mod_status = _moderate_chat_text(project_id, tenant_id, chatlog["messages"])
+    get_progress_reporter().step(
+        project_id, StepKey.MODERATION_DECISION, phase=ProjectState.ANALYZING.value,
+        facts={"inputs": ["聊天訊息"], "analysis": "內容合規判定", "verdict": mod_status},
+    )
+    if mod_status == ModerationStatus.BLOCKED.value:
+        repo.update_project(project_id, {
+            "status": ProjectState.FAILED.value,
+            "error_code": "MODERATION_BLOCKED",
+            "error_message": "內容審核未通過（已封鎖）",
+        })
+        log.info("chat_starter: project %s blocked by moderation; skip", project_id)
+        started.append({"project_id": project_id, "status": ModerationStatus.BLOCKED.value})
+        return
+
+    # 2a) video timebase: extract the MP4 creation_time so chat highlights align
+    #     to video 0:00. The chat LOG carries only wall-clock epoch (c.at) with no
+    #     video-start anchor, so creation_time is the ONLY reliable bridge; without
+    #     it the fallback would cut source.mp4 relative to the first chat message
+    #     (off by the pre-show gap Δ) → the wrong moment gets clipped.
+    vs_epoch = _extract_and_store_timebase(
+        repo, storage, settings, project,
+        chat_started_epoch_ms=chatlog.get("started_at_epoch_ms"),
+    )
+    if vs_epoch is None and settings.require_video_timebase and not settings.use_inmemory:
+        # Fail-safe: don't ship a mis-timed artifact cut against a fabricated
+        # chat-relative timebase. Block; the editor can set it via PUT video-timebase.
+        repo.update_project(project_id, {
+            "status": ProjectState.FAILED.value,
+            "error_code": "MISSING_VIDEO_TIMEBASE",
+            "error_message": "影片缺少 creation_time 時基，無法將聊天高光對齊影片；"
+                             "請以 PUT /projects/{id}/video-timebase 提供，或改用逐字稿分析。",
+        })
+        log.warning("chat_starter: project %s missing video timebase; blocked (fail-safe)", project_id)
+        started.append({"project_id": project_id, "status": "MISSING_VIDEO_TIMEBASE"})
+        return
+
+    # 2b) analyze → COMPOSING. With a resolved timebase the chat highlights are
+    #     video-relative; without one (offline/stub, or the require flag off) the
+    #     worker marks the output -chattime (explicit chat-relative fallback).
+    advance_to_analyzing(repo, project_id, ProjectState(repo.get_project(project_id)["status"]))
+    result = chat_analysis_worker.run(repo, project_id, chatlog, video_start_epoch_ms=vs_epoch)
+    get_progress_reporter().step(
+        project_id, StepKey.DETECTING_HIGHLIGHTS, phase=ProjectState.COMPOSING.value,
+        facts={"inputs": ["聊天室熱度", "情緒反應"], "signals": ["情緒轉折", "聊天室熱度"],
+               "found": len(result["highlights"])},
+    )
+
+    # 3) compose → READY_TO_EDIT (+ persist timeline for the render plane)
+    timeline = composer_worker.run(repo, project_id)
+    storage.put_json(
+        settings.work_bucket,
+        settings.timeline_key(tenant_id, project_id, timeline["version"]),
+        timeline,
+    )
+    get_progress_reporter().step(
+        project_id, StepKey.COMPOSING, phase=ProjectState.COMPOSING.value,
+        facts={"beats": "起承轉合", "clips": len(timeline.get("clips", []) or []),
+               "analysis": "編排初剪時間軸"},
+    )
+
+    # 4) render: only auto-render when moderation permits publishing. A FLAGGED
+    # chat project composes (editable) but waits for a moderator override before it
+    # can render/download. When allowed, fire the dual-track (pipeline + edit) — same
+    # shared kickoff as the video path, so both routes render through the render SFN.
+    if moderation_allows_publish(mod_status):
+        instruction = repo.get_project(project_id).get("edit_instruction") or DEFAULT_EDIT_INSTRUCTION
+        for kicked in kickoff_dual_track(
+            repo, storage, project_id,
+            timeline_version=timeline["version"], instruction=instruction,
+            routes=_dual_track_routes(),
+        ):
+            started.append({**kicked, "highlight_count": len(result["highlights"])})
+    else:
+        log.info("chat_starter: project %s moderation=%s; composed, awaiting review before render",
+                 project_id, mod_status)
+        started.append({
+            "project_id": project_id,
+            "status": mod_status,
+            "highlight_count": len(result["highlights"]),
+        })

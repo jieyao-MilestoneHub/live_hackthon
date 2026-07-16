@@ -103,26 +103,11 @@ resource "aws_iam_role_policy" "backend_render" {
   })
 }
 
-# edit-by-language Route A: let the sidecar enqueue the async encode onto ai-task.
-resource "aws_iam_role_policy" "edit_enqueue" {
-  count = var.enable_edit_by_language ? 1 : 0
-  name  = "${var.name}-edit-enqueue"
-  role  = aws_iam_role.exec.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid      = "EnqueueAiTask"
-      Effect   = "Allow"
-      Action   = "sqs:SendMessage"
-      Resource = var.ai_task_queue_arn
-    }]
-  })
-}
-
-# edit-by-language Route B: let the synchronous planner call Claude on Bedrock.
-# Gated so the InvokeModel grant only exists once you've probed + set the ARNs.
+# edit-by-language: let the NL planner call Claude on Bedrock (edit route). Gated so
+# the InvokeModel grant only exists once you've probed + set the ARNs; default off →
+# the deterministic Stub planner runs and no Bedrock grant is created.
 resource "aws_iam_role_policy" "edit_bedrock" {
-  count = var.enable_edit_by_language && var.edit_planner_llm && length(var.bedrock_model_arns) > 0 ? 1 : 0
+  count = var.edit_planner_llm && length(var.bedrock_model_arns) > 0 ? 1 : 0
   name  = "${var.name}-edit-bedrock"
   role  = aws_iam_role.exec.id
   policy = jsonencode({
@@ -156,22 +141,24 @@ resource "aws_lambda_function" "backend" {
   # would silently miss.
   environment {
     variables = {
-      USE_INMEMORY             = var.use_inmemory ? "1" : "0"
-      ENV                      = var.env
-      DYNAMODB_TABLE           = var.dynamodb_table
-      RAW_BUCKET               = var.raw_bucket
-      WORK_BUCKET              = var.work_bucket
-      OUTPUT_BUCKET            = var.output_bucket
-      PRESIGN_EXPIRY_SEC       = tostring(var.presign_expiry_sec)
-      MAX_UPLOAD_BYTES         = tostring(var.max_upload_bytes)
-      MAX_BATCH_FILES          = tostring(var.max_batch_files)
-      MODERATION_ENABLED       = var.moderation_enabled ? "1" : "0"
+      USE_INMEMORY       = var.use_inmemory ? "1" : "0"
+      ENV                = var.env
+      DYNAMODB_TABLE     = var.dynamodb_table
+      RAW_BUCKET         = var.raw_bucket
+      WORK_BUCKET        = var.work_bucket
+      OUTPUT_BUCKET      = var.output_bucket
+      PRESIGN_EXPIRY_SEC = tostring(var.presign_expiry_sec)
+      MAX_UPLOAD_BYTES   = tostring(var.max_upload_bytes)
+      MAX_BATCH_FILES    = tostring(var.max_batch_files)
+      MODERATION_ENABLED = var.moderation_enabled ? "1" : "0"
+      # Production hardening: behind the API Gateway JWT authorizer, identity/roles
+      # come only from the gateway-verified claims. Turn OFF the dev header fallback
+      # so no caller can self-grant a tenant/user/role via X-* headers. See auth.py.
+      AUTH_DEV_HEADERS         = "0"
       RENDER_STATE_MACHINE_ARN = var.render_state_machine_arn
 
-      # edit-by-language sidecar. AI_TASK_QUEUE_URL empty → sidecar skips enqueue
-      # (returns the plan without triggering encode). EDIT_PLANNER_LLM off → Route A
-      # (deterministic Stub); on → Route B (Claude on Bedrock).
-      AI_TASK_QUEUE_URL             = var.ai_task_queue_url
+      # edit-by-language: the endpoint plans then StartExecutions the render SFN
+      # (same as pipeline). EDIT_PLANNER_LLM off → deterministic Stub; on → Claude.
       EDIT_PLANNER_LLM              = var.edit_planner_llm ? "1" : "0"
       EDIT_PLANNER_MODEL_ID         = var.edit_planner_model_id
       EDIT_PLANNER_QUALITY_MODEL_ID = var.edit_planner_quality_model_id

@@ -71,6 +71,15 @@ class ProjectCreate(BaseModel):
             "'chat'：改由聊天 LOG（POST /analyze）產生高光，Starter 會略過自動 Transcribe。"
         ),
     )
+    edit_instruction: str | None = Field(
+        default=None,
+        examples=["剪出幾個最精彩的爆梗片段，串成一支高光短片"],
+        description=(
+            "AI 剪接路線的預設自然語言指令。分析完成後自動雙軌並行（pipeline + edit）各出一支"
+            "artifact，edit 路線用此指令規劃；省略則用系統預設模板。使用者可事後 POST"
+            " /edit-by-language 用新指令重剪。"
+        ),
+    )
 
 
 class ProjectCreated(BaseModel):
@@ -430,7 +439,7 @@ class RenderCreate(BaseModel):
     timeline_version: int | None = Field(
         default=None, description="省略則使用 latest_timeline_version"
     )
-    route: Literal["pipeline", "agent"] | None = Field(
+    route: Literal["pipeline", "edit"] | None = Field(
         default=None, description="創意路線（省略＝pipeline）"
     )
 
@@ -448,7 +457,7 @@ class Render(BaseModel):
     render_id: str
     project_id: str
     status: RenderState
-    route: Literal["pipeline", "agent"] | None = None
+    route: Literal["pipeline", "edit"] | None = None
     current_stage: str | None = None
     timeline_version: int
     effect_seed: int | None = None
@@ -467,7 +476,7 @@ class Artifact(BaseModel):
     artifact_id: str
     project_id: str
     render_id: str
-    route: Literal["pipeline", "agent"] | None = None
+    route: Literal["pipeline", "edit"] | None = None
     timeline_version: int | None = None
     status: str
     duration_ms: int | None = None

@@ -41,6 +41,37 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _moderation_summary(
+    repo: ProjectRepository, project: dict[str, Any], project_id: str
+) -> dict[str, Any]:
+    """artifact.v1 moderation summary: the project's current moderation_status
+    (reflects any moderator OVERRIDE) plus counts + top categories from the latest
+    SCAN audit event. Best-effort — on any read issue we still surface the status so
+    a downloader always sees the moderation verdict on the manifest (WS1)."""
+    summary: dict[str, Any] = {"status": project.get("moderation_status") or "PENDING"}
+    try:
+        scans = [e for e in repo.list_moderation_events(project_id) if e.get("action") == "SCAN"]
+    except Exception:  # noqa: BLE001 — never fail a publish over an audit-read hiccup
+        return summary
+    if not scans:
+        return summary
+    last = scans[-1]
+    labels = (last.get("visual") or {}).get("labels") or []
+    findings = (last.get("text") or {}).get("findings") or []
+    cats: list[str] = []
+    for name in [lb.get("name") for lb in labels] + [f.get("category") for f in findings]:
+        if name and name not in cats:
+            cats.append(name)
+    summary["visual_label_count"] = len(labels)
+    summary["text_finding_count"] = len(findings)
+    summary["top_categories"] = cats[:5]
+    if last.get("policy_version"):
+        summary["policy_version"] = last["policy_version"]
+    if last.get("decided_at"):
+        summary["decided_at"] = last["decided_at"]
+    return summary
+
+
 def _fmt_ts(ms: int) -> str:
     h, rem = divmod(int(ms), 3_600_000)
     m, rem = divmod(rem, 60_000)
@@ -328,6 +359,7 @@ def run(
         "resolution": render_spec["resolution"],
         "size_bytes": len(video_bytes),
         "checksum": "sha256:" + hashlib.sha256(video_bytes).hexdigest(),
+        "moderation": _moderation_summary(repo, project, project_id),
         "files": {
             "video_key": out["video_key"],
             "preview_key": out["preview_key"],

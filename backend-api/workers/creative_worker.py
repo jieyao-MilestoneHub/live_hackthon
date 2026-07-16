@@ -118,13 +118,28 @@ def submit_render_routes(
     project_id: str,
     timeline_version: int | None = None,
     routes: tuple[str, ...] = DUAL_TRACK_ROUTES,
+    *,
+    instruction: str | None = None,
 ) -> list[dict[str, Any]]:
-    """雙軌分流：對每個 route 各建一個 render 並 inline 跑創意規劃（序列）。
+    """雙軌分流（offline/CLI）：對每個 route 各建一個 render 並 inline 產計畫（序列），回傳
+    QUEUED Render items。pipeline 走規則式 ``run``；edit 走 NL 剪接 ``plan_edit_render``。
 
-    回傳每個 route 的 Render item（status QUEUED）。真雲端由 chat_starter 對每個 route
-    各 ``create_render_record`` + ``start_render``（兩個獨立 SFN execution）。
+    真雲端由 ``app.edit_planning.kickoff_dual_track`` 對每個 route 各建 render + start_render
+    （各自獨立的 render SFN execution，平行）。
     """
-    return [submit_render(repo, storage, project_id, timeline_version, route=r) for r in routes]
+    from app.edit_planning import DEFAULT_EDIT_INSTRUCTION, plan_edit_render  # deferred: avoid cycle
+
+    out: list[dict[str, Any]] = []
+    for r in routes:
+        if r == "edit":
+            out.append(plan_edit_render(
+                repo, storage, project_id,
+                instruction=instruction or DEFAULT_EDIT_INSTRUCTION,
+                timeline_version=timeline_version,
+            ))
+        else:
+            out.append(submit_render(repo, storage, project_id, timeline_version, route=r))
+    return out
 
 
 def _advance(

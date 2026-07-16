@@ -36,6 +36,11 @@ locals {
     OUTPUT_BUCKET        = var.output_bucket
     HIGHLIGHT_LLM_ENRICH = var.highlight_llm_enrich ? "1" : "0"
     MODERATION_ENABLED   = var.moderation_enabled ? "1" : "0"
+    # Auto dual-track: mark_ready StartExecutions the render SFN for pipeline + edit.
+    RENDER_STATE_MACHINE_ARN      = var.render_state_machine_arn
+    EDIT_PLANNER_LLM              = var.edit_planner_llm ? "1" : "0"
+    EDIT_PLANNER_MODEL_ID         = var.edit_planner_model_id
+    EDIT_PLANNER_QUALITY_MODEL_ID = var.edit_planner_quality_model_id
   }
 }
 
@@ -111,6 +116,40 @@ resource "aws_iam_role_policy" "worker" {
   name   = "${var.name}-worker-data"
   role   = aws_iam_role.worker.id
   policy = data.aws_iam_policy_document.worker.json
+}
+
+# Auto dual-track (WS3): mark_ready StartExecutions the render SFN for pipeline +
+# edit. Only granted when the render workflow ARN is wired.
+resource "aws_iam_role_policy" "worker_start_render" {
+  count = var.render_state_machine_arn == "" ? 0 : 1
+  name  = "${var.name}-worker-start-render"
+  role  = aws_iam_role.worker.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "StartRender"
+      Effect   = "Allow"
+      Action   = "states:StartExecution"
+      Resource = var.render_state_machine_arn
+    }]
+  })
+}
+
+# Edit route NL planner on Claude (gated): only when edit_planner_llm + ARNs set.
+# Default off → the deterministic Stub planner runs, so no Bedrock grant exists.
+resource "aws_iam_role_policy" "worker_edit_bedrock" {
+  count = var.edit_planner_llm && length(var.bedrock_model_arns) > 0 ? 1 : 0
+  name  = "${var.name}-worker-edit-bedrock"
+  role  = aws_iam_role.worker.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "InvokeClaude"
+      Effect   = "Allow"
+      Action   = ["bedrock:InvokeModel"]
+      Resource = var.bedrock_model_arns
+    }]
+  })
 }
 
 # --- Worker Lambdas (same image, per-handler CMD) --------------------------

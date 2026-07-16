@@ -49,6 +49,17 @@ class _FakeText:
         return self._findings
 
 
+class _FakeVisual:
+    def __init__(self, result):
+        self._result = result
+
+    def start_visual_moderation(self, *a, **k):
+        return "job-x"
+
+    def poll_visual_moderation(self, job_id):
+        return self._result
+
+
 def _clear() -> None:
     from app.aws import factory, orchestration
     from app.repository import get_repository
@@ -83,6 +94,10 @@ def _seed(pid, analysis_source="transcribe"):
         "status": ProjectState.ANALYZING.value, "target_duration_ms": 30000,
         "analysis_source": analysis_source, "source_bucket": s.raw_bucket,
         "source_key": s.source_key("demo", pid), "latest_timeline_version": 0,
+        # Mirror the real flow: start_moderation set a visual job before the
+        # decision step, so the stub visual poll returns COMPLETED (clean), not the
+        # SKIPPED-means-scan-failed fail-safe path.
+        "moderation_job_id": "stub-job",
     })
 
 
@@ -122,6 +137,24 @@ def test_decision_disabled_is_allowed(inmem, monkeypatch) -> None:
 
     _seed("pd")
     assert lh.moderation_decision({"project_id": "pd"})["status"] == "ALLOWED"
+
+
+def test_decision_visual_scan_failure_fails_safe_to_flagged(inmem, monkeypatch) -> None:
+    """WS1: a Rekognition job that did NOT complete (FAILED/SKIPPED) means the video
+    was not inspected — must escalate to FLAGGED, never silently ALLOWED."""
+    from app.aws import factory
+    from app.repository import get_repository
+    from workers import lambda_handlers as lh
+
+    _seed("pv")
+    get_repository().update_project("pv", {"moderation_job_id": "job-x"})
+    monkeypatch.setattr(
+        factory, "get_visual_moderation", lambda: _FakeVisual({"status": "FAILED", "labels": []})
+    )
+    out = lh.moderation_decision({"project_id": "pv"})
+    assert out["status"] == "FLAGGED"  # fail-safe, not ALLOWED
+    ev = get_repository().list_moderation_events("pv")[-1]
+    assert "visual scan unavailable" in (ev.get("note") or "")
 
 
 # --- Render/download gates + override endpoint (moto client) ----------------

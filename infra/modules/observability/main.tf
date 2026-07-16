@@ -102,9 +102,44 @@ resource "aws_cloudwatch_dashboard" "batch" {
   })
 }
 
+# --- Alerting: one SNS topic for every alarm; email is notified (WS4). The topic
+#     is always created so alarm_actions can reference it; the email subscription
+#     only exists when alert_email is set (AWS sends a one-time confirmation email).
+resource "aws_sns_topic" "alerts" {
+  name = "${var.name}-alerts"
+  tags = var.tags
+}
+
+resource "aws_sns_topic_subscription" "email" {
+  count     = var.alert_email == "" ? 0 : 1
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.alert_email
+}
+
+# --- DLQ depth alarms: nobody consumes the DLQs, so a single visible message is a
+#     real dropped-record incident. Fire on > 0 → email. One alarm per DLQ name.
+resource "aws_cloudwatch_metric_alarm" "dlq_not_empty" {
+  for_each = toset(var.dlq_queue_names)
+
+  alarm_name          = "${each.value}-not-empty"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = each.value }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_description   = "A message landed in DLQ ${each.value} (record failed all retries). Inspect + redrive with scripts/redrive_dlq.sh."
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+  ok_actions          = [aws_sns_topic.alerts.arn]
+  tags                = var.tags
+}
+
 # --- Alarms: the two signals that most directly mean "architecture is the
-#     bottleneck". No SNS action wired (workshop simplicity) — visible in console
-#     + usable by the load test / demo run.
+#     bottleneck". Now wired to the SNS topic so the demo/on-site run gets emailed.
 resource "aws_cloudwatch_metric_alarm" "backend_throttles" {
   alarm_name          = "${var.name}-backend-throttles"
   namespace           = "AWS/Lambda"
@@ -117,6 +152,7 @@ resource "aws_cloudwatch_metric_alarm" "backend_throttles" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_description   = "Backend upload control-plane is being throttled — raise Lambda concurrency / account quota."
+  alarm_actions       = [aws_sns_topic.alerts.arn]
   tags                = var.tags
 }
 
@@ -132,9 +168,14 @@ resource "aws_cloudwatch_metric_alarm" "analysis_failures" {
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
   alarm_description   = "Analysis pipeline executions are failing (e.g. transcription failures) under load."
+  alarm_actions       = [aws_sns_topic.alerts.arn]
   tags                = var.tags
 }
 
 output "dashboard_name" {
   value = aws_cloudwatch_dashboard.batch.dashboard_name
+}
+
+output "alerts_topic_arn" {
+  value = aws_sns_topic.alerts.arn
 }

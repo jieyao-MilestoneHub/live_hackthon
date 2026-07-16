@@ -58,11 +58,6 @@ output "analysis_intake_queue_url" {
   value       = module.analysis_ingress.intake_queue_url
 }
 
-output "ai_task_queue_url" {
-  description = "SQS ai-task queue URL (§十九)."
-  value       = module.analysis_ingress.ai_task_queue_url
-}
-
 # --- Render plane (M2.2) ---
 output "render_state_machine_arn" {
   description = "Artifact Render state machine ARN."

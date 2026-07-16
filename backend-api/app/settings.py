@@ -48,6 +48,11 @@ class Settings:
     # timebase. Enforced only on the real cloud path (USE_INMEMORY=0); offline
     # stubs have no real MP4 and stay on the chat-relative fallback.
     require_video_timebase: bool = True
+    # Honor the dev-only X-Tenant-Id / X-User-Id / X-Roles headers (+ unverified
+    # Bearer decode) for identity when there are NO gateway-verified JWT claims.
+    # Default on for local/pytest; the deployed Lambda sets AUTH_DEV_HEADERS=0 so
+    # header-based identity/role self-grant is impossible in production. See auth.py.
+    auth_dev_headers: bool = True
 
     def source_key(self, tenant_id: str, project_id: str, filename: str = "source.mp4") -> str:
         """Raw-bucket object key per demand.md §十六."""
@@ -113,4 +118,5 @@ def get_settings() -> Settings:
         moderation_enabled=_env_bool("MODERATION_ENABLED", default=True),
         s3_addressing_style=os.environ.get("S3_ADDRESSING_STYLE", "auto"),
         require_video_timebase=_env_bool("REQUIRE_VIDEO_TIMEBASE", default=True),
+        auth_dev_headers=_env_bool("AUTH_DEV_HEADERS", default=True),
     )
