@@ -49,7 +49,12 @@ def propose_punchline_offsets(
     """對每個納入的高光，用逐字稿情緒峰提議校正 offset。
 
     在 ``[start-buffer, end]`` 內找情緒最高的逐字稿段落當笑點；提議起點 =
-    ``max(0, 笑點段起 − lead)``；offset = 提議起點 − 目前起點。無重疊段落 → 用全域峰。
+    ``max(0, 笑點段起 − lead)``；offset = 提議起點 − 目前起點。
+
+    **無重疊段落 → 不提議（skip）**：逐字稿是影片相對時間，若某高光窗與逐字稿完全不重疊，
+    多半是時基不一致（如聊天相對 -chattime 高光）或該處根本沒有語音；此時退回「整片全域
+    情緒峰」會把該高光硬拽到影片別處（例如把 20:00 的高光拉到 05:00 的全域峰），破壞成品。
+    故無重疊時不提議，交由呼叫端（refine_worker）在時基可信時才啟用。
     """
     segments = transcript.get("segments") or []
     if not segments:
@@ -60,7 +65,9 @@ def propose_punchline_offsets(
             continue
         start_ms, end_ms = int(h["start_ms"]), int(h["end_ms"])
         window = [s for s in segments if _overlaps(s, max(0, start_ms - buffer_ms), end_ms)]
-        peak = _peak_segment(window) if window else _peak_segment(segments)
+        if not window:
+            continue  # 無重疊 → 無可靠對齊，不硬拽到全域峰
+        peak = _peak_segment(window)
         if peak is None:
             continue
         proposed_start = max(0, int(peak["start_ms"]) - lead_ms)
@@ -145,13 +152,18 @@ def run_refine(
     *,
     narrative_reviewer: Any = None,
     lead_ms: int = 2000,
+    propose_offsets: bool = True,
 ) -> dict[str, Any]:
-    """純編排：提議笑點 offset + 敘事精修 annotations。未給 reviewer 走 factory。"""
+    """純編排：提議笑點 offset + 敘事精修 annotations。未給 reviewer 走 factory。
+
+    ``propose_offsets=False``（時基不可信，如聊天相對高光）→ 不提議 offset，只做敘事精修，
+    避免用影片相對逐字稿去校正非影片相對的高光窗。
+    """
     if narrative_reviewer is None:
         from app.aws import factory
 
         narrative_reviewer = factory.get_narrative_reviewer()
 
-    proposed_offsets = propose_punchline_offsets(transcript, highlights, lead_ms=lead_ms)
+    proposed = propose_punchline_offsets(transcript, highlights, lead_ms=lead_ms) if propose_offsets else []
     enriched = enrich_annotations(annotations, transcript, highlights, narrative_reviewer)
-    return {"proposed_offsets": proposed_offsets, "annotations": enriched}
+    return {"proposed_offsets": proposed, "annotations": enriched}

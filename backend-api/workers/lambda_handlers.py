@@ -42,6 +42,7 @@ from app.state import (
     moderation_allows_publish,
 )
 from app.storage import get_storage
+from app.video_timebase import extract_creation_epoch_ms
 from creative import DUAL_TRACK_ROUTES
 from workers import (
     analysis_worker,
@@ -112,10 +113,59 @@ def validate_source(event: dict[str, Any], context: Any = None) -> dict[str, Any
     }
 
 
+# Cross-check bound: an MP4 creation_time farther than this from the chat log is
+# treated as unreliable (wrong file / stripped metadata) and ignored (36h).
+_TIMEBASE_PLAUSIBLE_MS = 36 * 3600 * 1000
+
+
+def _extract_and_store_timebase(
+    repo: Any,
+    storage: Any,
+    settings: Any,
+    project: dict[str, Any],
+    *,
+    chat_started_epoch_ms: int | None = None,
+) -> int | None:
+    """Extract the MP4 ``creation_time`` → epoch ms and persist it on the Project
+    as ``video_start_epoch_ms`` (the chat↔video timebase anchor). Returns the value
+    (already-present or newly extracted) or ``None`` when unavailable.
+
+    When ``chat_started_epoch_ms`` is given, a creation_time farther than
+    ``_TIMEBASE_PLAUSIBLE_MS`` from it is rejected as unreliable."""
+    existing = project.get("video_start_epoch_ms")
+    if existing is not None:
+        return int(existing)
+    src_bucket = project.get("source_bucket") or settings.raw_bucket
+    src_key = project.get("source_key")
+    if not src_key:
+        return None
+    epoch = extract_creation_epoch_ms(storage, src_bucket, src_key)
+    if epoch is None:
+        return None
+    if chat_started_epoch_ms is not None and abs(epoch - int(chat_started_epoch_ms)) > _TIMEBASE_PLAUSIBLE_MS:
+        log.warning(
+            "timebase: creation_time %s far from chat start %s for %s; ignoring",
+            epoch, chat_started_epoch_ms, project.get("project_id"),
+        )
+        return None
+    repo.update_project(project["project_id"], {"video_start_epoch_ms": int(epoch)})
+    return int(epoch)
+
+
 def probe_metadata(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
-    """Near-nop for the happy path: real ``source_duration_ms`` comes from the
-    transcript. Kept as an explicit state for observability / future ffprobe."""
-    return {"project_id": _project_id(event)}
+    """Extract the video timebase (MP4 ``creation_time`` → ``video_start_epoch_ms``)
+    so chat↔video alignment has its anchor. Best-effort: ``source_duration_ms``
+    still comes from the transcript; a missing creation_time just leaves the field
+    unset (the transcribe path's own highlights are already video-relative)."""
+    project_id = _project_id(event)
+    repo = get_repository()
+    project = repo.get_project(project_id)
+    if project is not None and project.get("video_start_epoch_ms") is None:
+        try:
+            _extract_and_store_timebase(repo, get_storage(), get_settings(), project)
+        except Exception:  # noqa: BLE001 — never fail the pipeline on a metadata probe
+            log.exception("probe_metadata: timebase extraction failed for %s", project_id)
+    return {"project_id": project_id}
 
 
 # --- Content moderation (§合規) --------------------------------------------
@@ -693,9 +743,33 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             started.append({"project_id": project_id, "status": ModerationStatus.BLOCKED.value})
             continue
 
-        # 2) analyze → COMPOSING (chat-relative timebase; no video probe in auto mode)
+        # 2a) video timebase: extract the MP4 creation_time so chat highlights align
+        #     to video 0:00. The chat LOG carries only wall-clock epoch (c.at) with no
+        #     video-start anchor, so creation_time is the ONLY reliable bridge; without
+        #     it the fallback would cut source.mp4 relative to the first chat message
+        #     (off by the pre-show gap Δ) → the wrong moment gets clipped.
+        vs_epoch = _extract_and_store_timebase(
+            repo, storage, settings, project,
+            chat_started_epoch_ms=chatlog.get("started_at_epoch_ms"),
+        )
+        if vs_epoch is None and settings.require_video_timebase and not settings.use_inmemory:
+            # Fail-safe: don't ship a mis-timed artifact cut against a fabricated
+            # chat-relative timebase. Block; the editor can set it via PUT video-timebase.
+            repo.update_project(project_id, {
+                "status": ProjectState.FAILED.value,
+                "error_code": "MISSING_VIDEO_TIMEBASE",
+                "error_message": "影片缺少 creation_time 時基，無法將聊天高光對齊影片；"
+                                 "請以 PUT /projects/{id}/video-timebase 提供，或改用逐字稿分析。",
+            })
+            log.warning("chat_starter: project %s missing video timebase; blocked (fail-safe)", project_id)
+            started.append({"project_id": project_id, "status": "MISSING_VIDEO_TIMEBASE"})
+            continue
+
+        # 2b) analyze → COMPOSING. With a resolved timebase the chat highlights are
+        #     video-relative; without one (offline/stub, or the require flag off) the
+        #     worker marks the output -chattime (explicit chat-relative fallback).
         advance_to_analyzing(repo, project_id, ProjectState(repo.get_project(project_id)["status"]))
-        result = chat_analysis_worker.run(repo, project_id, chatlog)
+        result = chat_analysis_worker.run(repo, project_id, chatlog, video_start_epoch_ms=vs_epoch)
         get_progress_reporter().step(
             project_id, StepKey.DETECTING_HIGHLIGHTS, phase=ProjectState.COMPOSING.value,
             facts={"inputs": ["聊天室熱度", "情緒反應"], "signals": ["情緒轉折", "聊天室熱度"],

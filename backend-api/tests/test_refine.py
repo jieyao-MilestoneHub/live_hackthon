@@ -58,12 +58,12 @@ def test_offset_custom_lead() -> None:
     assert p["proposed_start_ms"] == 25000  # 30000-5000
 
 
-def test_offset_no_overlap_uses_global_peak() -> None:
+def test_offset_no_overlap_skips() -> None:
+    # 高光窗與逐字稿完全不重疊（如時基不一致 / 該處無語音）→ 不提議。
+    # 舊行為會退回「整片全域情緒峰」把 2:30 的高光硬拽到 0:28（offset −122s），破壞成品；
+    # 現在改為不提議，避免錯誤位移。
     hls = [{"highlight_id": "hl-far", "start_ms": 150000, "end_ms": 170000, "selected": True}]
-    p = propose_punchline_offsets(_transcript(), hls)[0]
-    # 無重疊 → 全域峰 s2 → proposed 28000
-    assert p["proposed_start_ms"] == 28000
-    assert p["offset_ms"] == 28000 - 150000
+    assert propose_punchline_offsets(_transcript(), hls) == []
 
 
 def test_offset_empty_transcript() -> None:

@@ -96,6 +96,14 @@ class Storage(abc.ABC):
         """Read raw bytes at ``bucket/key``. Raises ``KeyError`` if absent."""
 
     @abc.abstractmethod
+    def get_range(self, bucket: str, key: str, start: int, length: int) -> bytes:
+        """Read ``length`` bytes starting at byte offset ``start`` from ``bucket/key``.
+
+        Used to sniff an MP4's moov/mvhd for the video ``creation_time`` (the
+        chat↔video timebase anchor) without downloading a multi-GB source. May
+        return fewer bytes than requested at EOF. Raises ``KeyError`` if absent."""
+
+    @abc.abstractmethod
     def download_to_file(self, bucket: str, key: str, dest_path: str) -> None:
         """Stream ``bucket/key`` to a local file (no full-object RAM load).
 
@@ -185,6 +193,14 @@ class StubStorage(Storage):
             return self._blobs[(bucket, key)]
         except KeyError:
             raise KeyError(f"no object at {bucket}/{key}") from None
+
+    def get_range(self, bucket: str, key: str, start: int, length: int) -> bytes:
+        try:
+            blob = self._blobs[(bucket, key)]
+        except KeyError:
+            raise KeyError(f"no object at {bucket}/{key}") from None
+        start = max(0, int(start))
+        return blob[start : start + int(length)]
 
     def download_to_file(self, bucket: str, key: str, dest_path: str) -> None:
         try:
@@ -325,6 +341,25 @@ class S3Storage(Storage):
         except ClientError as exc:
             if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
                 raise KeyError(f"no object at {bucket}/{key}") from exc
+            raise
+        return resp["Body"].read()
+
+    def get_range(self, bucket: str, key: str, start: int, length: int) -> bytes:
+        from botocore.exceptions import ClientError
+
+        start = max(0, int(start))
+        end = start + int(length) - 1  # HTTP Range is inclusive
+        try:
+            resp = self._client.get_object(
+                Bucket=bucket, Key=key, Range=f"bytes={start}-{end}"
+            )
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("NoSuchKey", "404"):
+                raise KeyError(f"no object at {bucket}/{key}") from exc
+            # InvalidRange (e.g. start past EOF): treat as empty, not fatal.
+            if code in ("InvalidRange", "416"):
+                return b""
             raise
         return resp["Body"].read()
 

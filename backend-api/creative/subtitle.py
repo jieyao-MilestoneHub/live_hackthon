@@ -26,6 +26,7 @@ _EMPHASIS_LIMIT = 3
 KEYWORD_MAX_MS = 2200   # 爆點字卡最長顯示
 KEYWORD_MIN_MS = 700    # 爆點字卡最短顯示
 _KEYWORD_TAIL_RATIO = 0.65  # 無 annotations 時，字卡落在 clip 後段的起點比例
+CHAT_CAPTION_MAX_MS = 2600  # chat-only 高光（無逐字稿）代表性留言的最長顯示
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -42,9 +43,8 @@ def _emphasis(text: str) -> list[str]:
     return found
 
 
-def _clip_cues(text: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
-    """Tier 1 逐字稿 cue（依標點分句、依字數比例均分時間）。"""
-    sentences = _split_sentences(text)
+def _layout_cues(sentences: list[str], start_ms: int, end_ms: int) -> list[dict[str, Any]]:
+    """把已切好的句子依字數比例鋪進 [start,end]（Tier 1 逐字稿 cue）。"""
     if not sentences:
         return []
     span = max(1, end_ms - start_ms)
@@ -65,6 +65,73 @@ def _clip_cues(text: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
         cues.append(cue)
         cursor = cue_end
     return cues
+
+
+def _clip_cues(text: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
+    """Tier 1 逐字稿 cue（整段文字 → 依標點分句、依字數比例均分時間）。"""
+    return _layout_cues(_split_sentences(text), start_ms, end_ms)
+
+
+def _sentences_for_source_span(
+    text: str, h_start: int, h_end: int, src_s: int, src_e: int
+) -> list[str]:
+    """取出對應此 clip 之 source 子區間 [src_s,src_e]（落在 highlight [h_start,h_end] 內）的句子。
+
+    composer 常把一個 highlight 前段裁切、或拆成 setup 刀 + punchline 刀（丟中段）才放進 clip；
+    整段逐字稿必須依 source 子區間切給各刀，否則會（a）整段塞進被裁短的 clip → 字幕跑得比語音
+    快；（b）同一 highlight 兩刀各貼整段 → 逐字稿重複、被丟掉的中段台詞照樣出現。
+
+    以字數比例近似句子在 highlight 內的 source 位置，取「句子中點落在此 clip 對應比例區間」者
+    → 每句只歸一刀（不重複），落在被丟中段的句子則兩刀都不取（正確丟棄）。整段 [h_start,h_end]
+    的 clip 會取回全部句子（與舊行為一致）。
+    """
+    sentences = _split_sentences(text)
+    if not sentences:
+        return []
+    hl_span = h_end - h_start
+    if hl_span <= 0:
+        return sentences  # 退化：無法定位 → 整段
+    f0 = max(0.0, min(1.0, (src_s - h_start) / hl_span))
+    f1 = max(0.0, min(1.0, (src_e - h_start) / hl_span))
+    if f1 <= f0:
+        return []
+    total = sum(len(s) for s in sentences) or 1
+    picked: list[str] = []
+    cursor = 0.0
+    for s in sentences:
+        seg = len(s) / total
+        mid = cursor + seg / 2.0
+        cursor += seg
+        if f0 <= mid < f1:
+            picked.append(s)
+    if picked:
+        return picked
+    # 邊界保底：區間有效卻沒抓到句（極短 clip）→ 取中點最接近者一句。
+    center = (f0 + f1) / 2.0
+    cursor = 0.0
+    best, best_d = sentences[0], 2.0
+    for s in sentences:
+        seg = len(s) / total
+        d = abs((cursor + seg / 2.0) - center)
+        cursor += seg
+        if d < best_d:
+            best, best_d = s, d
+    return [best]
+
+
+def _chat_caption_cue(text: str, start_ms: int, end_ms: int) -> list[dict[str, Any]]:
+    """chat-only 高光（無逐字稿）：把代表性留言短暫顯示於 clip 開頭，而非拉滿整個 clip。"""
+    text = text.strip()
+    if not text:
+        return []
+    cue_end = min(int(end_ms), int(start_ms) + CHAT_CAPTION_MAX_MS)
+    if cue_end <= start_ms:
+        return []
+    cue: dict[str, Any] = {"start_ms": int(start_ms), "end_ms": int(cue_end), "text": text, "kind": "caption"}
+    emph = _emphasis(text)
+    if emph:
+        cue["emphasis_words"] = emph
+    return [cue]
 
 
 def _annotation_by_hl(annotations: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
@@ -181,20 +248,29 @@ def plan_subtitles(
     animation = resolve_animation((settings.get("keyword") or {}).get("animation"))
     extractor = extractor or get_keyword_extractor()
 
-    text_by_hl = {
-        h["highlight_id"]: (h.get("transcript") or h.get("suggested_title") or "")
-        for h in highlights
-    }
     hl_by_id = {h["highlight_id"]: h for h in highlights}
     ann_by_hl = _annotation_by_hl(annotations)
 
     cues: list[dict[str, Any]] = []
     for clip in sorted(timeline.get("clips", []), key=lambda c: c["timeline_order"]):
         hid = clip["highlight_id"]
-        if want_caption:
-            cues.extend(_clip_cues(text_by_hl.get(hid, ""), clip["timeline_start_ms"], clip["timeline_end_ms"]))
-        if want_keyword and hid in hl_by_id:
-            kw = _keyword_cue(clip, hl_by_id[hid], ann_by_hl.get(hid), extractor, animation)
+        h = hl_by_id.get(hid)
+        tl_s, tl_e = clip["timeline_start_ms"], clip["timeline_end_ms"]
+        if want_caption and h is not None:
+            transcript_text = (h.get("transcript") or "").strip()
+            if transcript_text:
+                # 逐字稿路徑：依此 clip 保留的 source 子區間切句（拆兩刀不重複、前段裁切不塞爆）。
+                sents = _sentences_for_source_span(
+                    transcript_text,
+                    int(h["start_ms"]), int(h["end_ms"]),
+                    int(clip["source_start_ms"]), int(clip["source_end_ms"]),
+                )
+                cues.extend(_layout_cues(sents, tl_s, tl_e))
+            else:
+                # chat-only 高光：無逐字稿，短暫顯示 suggested_title（代表性留言），不拉滿整個 clip。
+                cues.extend(_chat_caption_cue(h.get("suggested_title") or "", tl_s, tl_e))
+        if want_keyword and h is not None:
+            kw = _keyword_cue(clip, h, ann_by_hl.get(hid), extractor, animation)
             if kw:
                 cues.append(kw)
 
