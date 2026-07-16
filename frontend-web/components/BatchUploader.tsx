@@ -353,7 +353,7 @@ export default function BatchUploader({
         className="btn btn--lg btn--block"
         style={{ marginTop: 16 }}
         disabled={running || !allPaired}
-        onClick={startUpload}
+        onClick={finished ? reset : startUpload}
       >
         {running ? '上傳中…' : finished ? '重新選擇檔案' : `建立並批次上傳 ${pairs.length || ''} 對 ▸`}
       </button>
