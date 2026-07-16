@@ -109,6 +109,10 @@ module "analysis_workflow" {
   edit_planner_model_id         = var.edit_planner_model_id
   edit_planner_quality_model_id = var.edit_planner_quality_model_id
   bedrock_model_arns            = var.bedrock_model_arns
+
+  # AI progress narration (#39): narrator runs synchronously in these workers.
+  progress_narrator_llm      = var.progress_narrator_llm
+  progress_narrator_model_id = var.progress_narrator_model_id
 }
 
 module "analysis_ingress" {
@@ -125,6 +129,13 @@ module "analysis_ingress" {
   work_bucket              = module.storage_editor.work_bucket
   output_bucket            = module.storage_editor.output_bucket
   render_state_machine_arn = module.render_workflow.state_machine_arn
+
+  # Chat-path model flags: highlight enrichment (Nova, already granted) + progress
+  # narration (Haiku, reuses bedrock_model_arns for the scoped grant).
+  highlight_llm_enrich       = var.highlight_llm_enrich
+  progress_narrator_llm      = var.progress_narrator_llm
+  progress_narrator_model_id = var.progress_narrator_model_id
+  bedrock_model_arns         = var.bedrock_model_arns
 }
 
 # --- Render plane (M2.2): POST /renders → StartExecution → Batch FFmpeg -----
@@ -154,6 +165,10 @@ module "render_batch" {
   work_bucket    = module.storage_editor.work_bucket
   output_bucket  = module.storage_editor.output_bucket
   bucket_arns    = module.storage_editor.bucket_arns
+
+  # Subtitle keyword animation (Bedrock Nova) in the FFmpeg render job.
+  subtitle_llm_keywords = var.subtitle_llm_keywords
+  subtitle_model_arns   = var.subtitle_model_arns
 }
 
 module "render_workflow" {

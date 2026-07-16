@@ -146,6 +146,9 @@ resource "aws_batch_job_definition" "render" {
       { name = "RAW_BUCKET", value = var.raw_bucket },
       { name = "WORK_BUCKET", value = var.work_bucket },
       { name = "OUTPUT_BUCKET", value = var.output_bucket },
+      # Subtitle keyword-pop animation via Bedrock (Nova); OFF → deterministic rules.
+      # ON needs the job_subtitle_bedrock grant below.
+      { name = "SUBTITLE_LLM_KEYWORDS", value = var.subtitle_llm_keywords ? "1" : "0" },
     ]
     logConfiguration = { logDriver = "awslogs" }
   })

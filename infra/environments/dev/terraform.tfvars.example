@@ -15,3 +15,30 @@ backend_image = "public.ecr.aws/docker/library/nginx:latest"
 # Set it HERE (terraform.tfvars is gitignored) — never in variables.tf, which is
 # public. Empty/unset = SNS topic created but no email subscription.
 # alert_email = "you@example.com"
+
+# --- No-stub model paths (2026-07-16) --------------------------------------
+# Flip every LLM path from Stub → real Bedrock. All fail OPEN to Stub if the
+# grant/model is missing, so verify real calls in CloudWatch after deploy.
+# Bedrock model access must be enabled in the us-east-1 console first.
+edit_planner_llm              = true
+edit_planner_model_id         = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+edit_planner_quality_model_id = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+highlight_llm_enrich          = true
+moderation_enabled            = true
+progress_narrator_llm         = true
+progress_narrator_model_id    = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+subtitle_llm_keywords         = true
+
+# InvokeModel ARNs the edit-planner + narrator may call (Haiku + Sonnet: profile
+# ARN + underlying foundation-model ARNs, since us./global. profiles route x-region).
+bedrock_model_arns = [
+  "arn:aws:bedrock:us-east-1:979287128595:inference-profile/global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "arn:aws:bedrock:us-east-1:979287128595:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0",
+  "arn:aws:bedrock:us-east-1:979287128595:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
+  "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+]
+# Nova ARNs the render job may call for subtitle keyword extraction.
+subtitle_model_arns = [
+  "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-micro-v1:0",
+]

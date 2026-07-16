@@ -323,8 +323,13 @@ resource "aws_lambda_function" "chat_starter" {
       WORK_BUCKET              = var.work_bucket
       OUTPUT_BUCKET            = var.output_bucket
       RENDER_STATE_MACHINE_ARN = var.render_state_machine_arn
-      HIGHLIGHT_LLM_ENRICH     = "0"
-      CHAT_TARGET_DURATION_MS  = "30000"
+      # Chat-path highlight enrichment on Bedrock (Nova); OFF → deterministic scorer.
+      # Nova is already granted below (BedrockModerationInvoke), so no extra IAM.
+      HIGHLIGHT_LLM_ENRICH = var.highlight_llm_enrich ? "1" : "0"
+      # AI progress narration (#39): chat_starter's step() narrates synchronously.
+      PROGRESS_NARRATOR_LLM      = var.progress_narrator_llm ? "1" : "0"
+      PROGRESS_NARRATOR_MODEL_ID = var.progress_narrator_model_id
+      CHAT_TARGET_DURATION_MS    = "30000"
     }
   }
 

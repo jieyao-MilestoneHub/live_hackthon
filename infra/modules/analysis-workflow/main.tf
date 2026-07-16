@@ -41,6 +41,11 @@ locals {
     EDIT_PLANNER_LLM              = var.edit_planner_llm ? "1" : "0"
     EDIT_PLANNER_MODEL_ID         = var.edit_planner_model_id
     EDIT_PLANNER_QUALITY_MODEL_ID = var.edit_planner_quality_model_id
+    # AI progress narration (#39): step() calls the narrator synchronously inside
+    # these workers; OFF → StubNarrator template. ON needs the narrator bedrock
+    # grant below (reuses bedrock_model_arns, which already holds the Haiku model).
+    PROGRESS_NARRATOR_LLM      = var.progress_narrator_llm ? "1" : "0"
+    PROGRESS_NARRATOR_MODEL_ID = var.progress_narrator_model_id
   }
 }
 
