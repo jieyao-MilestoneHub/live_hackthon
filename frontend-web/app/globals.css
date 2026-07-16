@@ -1237,3 +1237,336 @@ input[type="checkbox"] {
     animation: none;
   }
 }
+
+/* ============================================================
+   Dual-track output — 雙軌說明 · 剪接指令 · 儀表板 · 成品卡 · 為何入選
+   (built from the existing Neon Night Wave tokens)
+   ============================================================ */
+
+/* ---------- Small tags ---------- */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--f-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 9px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  color: var(--text);
+  white-space: nowrap;
+}
+.tag--crest {
+  color: var(--crest);
+  border-color: rgba(255, 61, 113, 0.5);
+  background: rgba(255, 61, 113, 0.08);
+}
+.tag--tide {
+  color: var(--tide);
+  border-color: rgba(41, 227, 240, 0.45);
+  background: rgba(41, 227, 240, 0.08);
+}
+
+/* ---------- Dual-track explainer (batch uploader) ---------- */
+.twotrack {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--wave-soft);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.twotrack__lead {
+  margin: 0;
+  font-size: 14px;
+}
+.twotrack__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* per-video 剪接指令 textarea */
+.prompt-ta {
+  margin-top: 8px;
+  resize: vertical;
+  min-height: 44px;
+  line-height: 1.5;
+  font-size: 13px;
+}
+
+/* ---------- Chips ---------- */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+}
+.chip--static {
+  color: var(--text);
+}
+.chip--kw {
+  color: #0a0f1f;
+  background: var(--warn);
+  border-color: transparent;
+  font-weight: 700;
+}
+
+/* ---------- Batch dashboard ---------- */
+.runlist {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 20px;
+}
+.runcard__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.runcard__title {
+  font-size: 20px;
+  margin-top: 4px;
+}
+.runcard__head-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* the signature: single stream forking into two lanes */
+.fork {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 14px;
+  position: relative;
+  padding-top: 14px;
+}
+.fork::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 12%;
+  right: 12%;
+  height: 2px;
+  border-radius: var(--r-pill);
+  background: var(--wave);
+  opacity: 0.7;
+}
+
+/* pulse dot reused by the pending track card */
+.feed__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--good);
+}
+.feed__dot.is-live {
+  background: var(--crest);
+  animation: feedPing 1.4s ease-out infinite;
+}
+@keyframes feedPing {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 61, 113, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 7px rgba(255, 61, 113, 0);
+  }
+}
+
+/* ---------- Track summary cards (what this version did) ---------- */
+.tracksum {
+  border: 1px solid var(--line);
+  border-top-width: 3px;
+  border-radius: var(--r-md);
+  background: var(--ink);
+  padding: 14px;
+}
+.tracksum--pipeline {
+  border-top-color: var(--tide);
+}
+.tracksum--agent {
+  border-top-color: var(--crest);
+}
+.tracksum__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tracksum__sub {
+  font-size: 12px;
+}
+.tracksum__intent {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.tracksum__intent-q {
+  color: var(--crest);
+}
+.tracksum__frame {
+  margin-top: 12px;
+  height: 96px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--wave-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--faint);
+  font-size: 12px;
+}
+.tracksum__block {
+  margin-top: 12px;
+}
+.tracksum__k {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--faint);
+  margin-bottom: 6px;
+}
+.tracksum__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tracksum__spec {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 12px;
+}
+.tracksum__pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ---------- "Why this highlight" ---------- */
+.whycard {
+  margin-top: 10px;
+}
+.whycard__toggle {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+.whycard__toggle:hover {
+  border-color: var(--tide);
+  color: var(--text);
+}
+.whycard__caret {
+  color: var(--faint);
+}
+.whycard__body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: feedIn 0.3s var(--ease) both;
+}
+@keyframes feedIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+.whyrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.whyrow--facets {
+  align-items: flex-start;
+}
+.whyrow__k {
+  flex: 0 0 64px;
+  color: var(--faint);
+  letter-spacing: 0.08em;
+}
+.whyrow__v {
+  color: var(--muted);
+}
+.whybar {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  border-radius: var(--r-pill);
+  background: var(--line);
+  overflow: hidden;
+}
+.whybar--sm {
+  height: 6px;
+  flex: 1;
+}
+.whybar__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: var(--r-pill);
+  background: var(--wave);
+}
+.whybar__mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--warn);
+  box-shadow: 0 0 0 1px rgba(255, 194, 75, 0.4);
+}
+.whyfacets {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.whyfacet {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.whyfacet__label {
+  flex: 0 0 40px;
+  color: var(--muted);
+}
+.whyfacet__v {
+  flex: 0 0 auto;
+  color: var(--faint);
+}
+
+@media (max-width: 640px) {
+  .fork {
+    grid-template-columns: 1fr;
+  }
+  .fork::before {
+    display: none;
+  }
+}

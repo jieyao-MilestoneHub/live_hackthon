@@ -426,6 +426,61 @@ export interface TimelineVersionResponse {
 /** 創意路線（雙軌分流）：pipeline=規則式管線 / agent=AI agent。 */
 export type Route = 'pipeline' | 'agent';
 
+// --- Edit-plan readback (effects.v1 + subtitle.v1) -----------------------
+// GET /projects/{id}/edit-by-language/plan?render_id= reads back the actual
+// per-render plan for EITHER track (route=pipeline OR route=agent) — the raw
+// material for a "what this version did" summary.
+
+/** effects.v1 effect types (contracts/effects.v1.schema.json). */
+export type EffectType = 'zoom_in' | 'zoom_out' | 'pan' | 'shake' | 'flash_transition' | 'cut';
+
+/** One effect: ranged (zoom/pan/shake use start_ms/end_ms/strength) or point
+ * (flash_transition/cut use at_ms/duration_ms). */
+export interface EffectItem {
+  type: EffectType;
+  start_ms?: number;
+  end_ms?: number;
+  strength?: number;
+  at_ms?: number;
+  duration_ms?: number;
+}
+
+/** effects.v1 plan document. */
+export interface EffectPlan {
+  schema_version?: string;
+  effect_seed?: number;
+  project_id?: string;
+  render_id?: string;
+  effects: EffectItem[];
+}
+
+/** subtitle.v1 cue: caption = 逐字稿層；keyword = 爆點字（emphasis_words 動畫）。 */
+export interface SubtitleCue {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  kind?: 'caption' | 'keyword';
+  emphasis_words?: string[];
+  animation?: { type?: string; duration_ms?: number };
+}
+
+/** subtitle.v1 plan document. */
+export interface SubtitlePlan {
+  schema_version?: string;
+  language?: string;
+  project_id?: string;
+  render_id?: string;
+  style?: Record<string, unknown>;
+  cues: SubtitleCue[];
+}
+
+/** GET /projects/{id}/edit-by-language/plan response (EditPlan). */
+export interface EditPlan {
+  render_id: string;
+  effects?: EffectPlan | null;
+  subtitle?: SubtitlePlan | null;
+}
+
 /** Request body for POST /projects/{id}/renders (openapi: RenderCreate). */
 export interface RenderCreate {
   /** Omit to use the project's latest timeline version. */

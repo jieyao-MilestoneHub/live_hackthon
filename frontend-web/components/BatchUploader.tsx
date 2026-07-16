@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   MAX_BATCH_FILES,
   MAX_UPLOAD_BYTES,
@@ -54,7 +55,9 @@ export default function BatchUploader({
   const [running, setRunning] = useState(false);
   const [finished, setFinished] = useState(false);
   const [dragOver, setDragOver] = useState(false);
+  const [prompts, setPrompts] = useState<Record<string, string>>({});
   const inputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
 
   const { pairs, unpairedVideos, unpairedLogs } = useMemo(
     () => reconcilePairs(videos, logs, manual),
@@ -137,14 +140,14 @@ export default function BatchUploader({
   async function startUpload() {
     const chatPairs: ChatUploadPair[] = pairs
       .filter((p) => p.log)
-      .map((p) => ({ video: p.video, log: p.log as File }));
+      .map((p) => ({ video: p.video, log: p.log as File, prompt: prompts[fileId(p.video)] }));
     if (!chatPairs.length || !allPaired || running) return;
     setRunning(true);
     setFinished(false);
     const init: Record<string, BatchItemState> = {};
     for (const p of chatPairs) init[fileId(p.video)] = { status: 'queued', pct: 0 };
     setItems(init);
-    await runBatchUpload(
+    const results = await runBatchUpload(
       chatPairs,
       { target_duration_ms: targetDurationMs, titlePrefix },
       (index, patch) => {
@@ -155,6 +158,12 @@ export default function BatchUploader({
       // single/few large files fill the ~6-PUT budget instead of crawling at 2.
       { fileConcurrency: 3 },
     );
+    // Funnel to the dual-track dashboard to watch each video produce two versions.
+    const ids = results.filter((r) => r.ok && r.projectId).map((r) => r.projectId as string);
+    if (ids.length) {
+      router.push(`/batch?ids=${ids.map(encodeURIComponent).join(',')}`);
+      return;
+    }
     setRunning(false);
     setFinished(true);
   }
@@ -169,6 +178,19 @@ export default function BatchUploader({
 
   return (
     <div className="batch">
+      {/* Dual-track explainer — teach the two outputs up front so results aren't confusing. */}
+      <div className="twotrack">
+        <p className="twotrack__lead cjk">每支影片會同時產出<strong className="grad"> 兩個版本</strong>：</p>
+        <div className="twotrack__row">
+          <span className="tag tag--tide">模板版</span>
+          <span className="cjk">規則式、穩定，不需要指令</span>
+        </div>
+        <div className="twotrack__row">
+          <span className="tag tag--crest">指令版</span>
+          <span className="cjk">AI 依你在每張卡片填的文字客製；留白 → 也套用預設模板</span>
+        </div>
+      </div>
+
       <label
         className={`dropzone${dragOver ? ' is-drag' : ''}`}
         onDragOver={(e) => {
@@ -292,6 +314,23 @@ export default function BatchUploader({
                   ) : (
                     <div className="batch__meta mono muted" style={{ marginTop: 6 }}>
                       {pair.log ? `LOG · ${pair.log.name}` : '（無 LOG）'}
+                    </div>
+                  )}
+
+                  {!running && !finished && (
+                    <textarea
+                      className="input prompt-ta"
+                      rows={2}
+                      maxLength={280}
+                      placeholder="想怎麼剪？（只餵給「指令版」，留白→套用預設模板）"
+                      value={prompts[vid] ?? ''}
+                      onChange={(e) => setPrompts((p) => ({ ...p, [vid]: e.target.value }))}
+                      aria-label={`${video.name} 的剪接指令`}
+                    />
+                  )}
+                  {(running || finished) && prompts[vid]?.trim() && (
+                    <div className="batch__meta mono muted" style={{ marginTop: 6 }}>
+                      指令版指令：{prompts[vid].trim()}
                     </div>
                   )}
 

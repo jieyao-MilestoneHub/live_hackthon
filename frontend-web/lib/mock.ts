@@ -11,14 +11,19 @@
 import type {
   Artifact,
   DownloadUrl,
+  EditPlan,
+  EffectItem,
   Highlight,
   HighlightList,
   Project,
+  ProgressEvent,
+  ProgressView,
   ProjectState,
   Render,
   RenderCreated,
   RenderState,
   Route,
+  SubtitleCue,
   Timeline,
   UploadSession,
 } from '@/types';
@@ -36,6 +41,18 @@ export const MOCK_HIGHLIGHTS: Highlight[] = [
     suggested_title: '衝了！成功時刻',
     selected: true,
     locked: false,
+    // Rich explainability fields (為何入選) — normally filled by the chat-analysis
+    // backend; mocked so the HighlightWhy panel demos offline.
+    signal: 'fusion',
+    status: 'included',
+    chat_window: { start_ms: 152000, end_ms: 190000 },
+    correction: { applied: true, offset_ms: -2000, note: '彈幕反應較畫面延後，事件窗往前修正 2s' },
+    emotion: {
+      score: 0.93,
+      breakdown: { keyword: 0.52, emoji: 0.24, punctuation: 0.09, volume: 0.08 },
+      counts: { 笑: 12, 驚: 8 },
+    },
+    detection: { minute_volume: 214, baseline_mean: 62, baseline_sigma: 26, threshold: 114 },
   },
   {
     highlight_id: 'hl-002',
@@ -48,6 +65,16 @@ export const MOCK_HIGHLIGHTS: Highlight[] = [
     suggested_title: '神操作',
     selected: true,
     locked: false,
+    signal: 'chat_volume',
+    status: 'included',
+    chat_window: { start_ms: 44000, end_ms: 79000 },
+    correction: { applied: false, offset_ms: 0 },
+    emotion: {
+      score: 0.88,
+      breakdown: { keyword: 0.44, emoji: 0.3, punctuation: 0.1, volume: 0.04 },
+      counts: { 驚: 15, 讚: 6 },
+    },
+    detection: { minute_volume: 178, baseline_mean: 62, baseline_sigma: 26, threshold: 114 },
   },
 ];
 
@@ -258,6 +285,124 @@ export function mockListArtifacts(projectId: string): Artifact[] {
     duration_ms: 29800,
     aspect_ratio: '9:16',
     resolution: { width: 1080, height: 1920 },
+    size_bytes: route === 'agent' ? 9_800_000 : 8_600_000,
     created_at: '2026-07-14T10:06:00Z',
   }));
+}
+
+// --- Mock progress-narration feed (AI 即時進度旁白, offline demo) ---------
+// Synthesizes a stepping progress.v1 feed from the same sessionStorage
+// timestamps the analysis/render walk uses, so the ProgressFeed animates
+// step-by-step offline. Real narration comes from the backend /progress route.
+
+const PROGRESS_ANALYSIS: { at: number; step: string; message: string }[] = [
+  { at: 0, step: 'UPLOAD_RECEIVED', message: '已接收影片與聊天室 LOG，準備進場分析。' },
+  { at: 400, step: 'VALIDATING', message: '正在驗證來源影片編碼與時間基準。' },
+  { at: 1000, step: 'ANALYZING_CHATLOG', message: '正從聊天室 LOG 解析情緒起伏與洗版熱區。' },
+  { at: 1800, step: 'DETECTING_HIGHLIGHTS', message: '交叉逐字稿與聊天室反應鎖定情緒高峰——已抓出 2 段。' },
+  { at: 2400, step: 'MODERATION_SCAN', message: '正並行掃描畫面與字幕內容的合規風險。' },
+  { at: 3000, step: 'MODERATION_DECISION', message: '彙整視覺與文字風險，判定發布分級——通過。' },
+  { at: 3600, step: 'COMPOSING', message: '依起承轉合把 2 段高光編排成初剪時間軸。' },
+  { at: 4600, step: 'READY', message: '初剪完成，2 段精華已可預覽微調。' },
+];
+
+const PROGRESS_RENDER: { at: number; step: string; message: string }[] = [
+  { at: 0, step: 'PLANNING_SUBTITLES', message: '正逐字生成雙層字幕與爆點關鍵字動畫。' },
+  { at: 1200, step: 'PLANNING_EFFECTS', message: '為爆點段落配置轉場與強調特效。' },
+  { at: 2400, step: 'QUEUED', message: '剪輯藍圖就緒，排入影片編碼佇列。' },
+  { at: 3200, step: 'RENDERING', message: 'FFmpeg 正合成畫面、字幕與特效輸出短片。' },
+  { at: 4200, step: 'VALIDATING_ARTIFACT', message: '正驗證輸出短片的時長與完整性。' },
+  { at: 4400, step: 'PUBLISHING', message: '封裝成品與縮圖，發佈可下載連結。' },
+  { at: 4600, step: 'DONE', message: '完成，精華短片已可下載。' },
+];
+
+export function mockProgress(projectId: string): ProgressView {
+  let aStart = readNum(analysisKey(projectId));
+  if (!aStart) {
+    aStart = Date.now();
+    writeStr(analysisKey(projectId), String(aStart));
+  }
+  const aElapsed = Date.now() - aStart;
+  const rStart = readNum(renderStartKey(projectId));
+  const rElapsed = rStart ? Date.now() - rStart : -1;
+
+  const events: ProgressEvent[] = [];
+  const push = (base: number, at: number, step: string, message: string, running: boolean) =>
+    events.push({
+      schema_version: 'progress.v1',
+      progress_id: `mock_prog_${step}_${projectId}`,
+      project_id: projectId,
+      step,
+      status: running ? 'RUNNING' : 'DONE',
+      message,
+      created_at: new Date(base + at).toISOString(),
+    });
+
+  const analysisSoFar = PROGRESS_ANALYSIS.filter((s) => s.at <= aElapsed);
+  analysisSoFar.forEach((s, i) => {
+    const isLast = i === analysisSoFar.length - 1;
+    const running = isLast && rElapsed < 0 && s.step !== 'READY';
+    push(aStart, s.at, s.step, s.message, running);
+  });
+
+  if (rElapsed >= 0) {
+    const renderSoFar = PROGRESS_RENDER.filter((s) => s.at <= rElapsed);
+    renderSoFar.forEach((s, i) => {
+      const isLast = i === renderSoFar.length - 1;
+      push(rStart, s.at, s.step, s.message, isLast && s.step !== 'DONE');
+    });
+  }
+
+  return { project_id: projectId, latest: events[events.length - 1] ?? null, events };
+}
+
+// --- Mock edit-plan readback (effects.v1 + subtitle.v1) ------------------
+// Differentiates by route encoded in the render_id (…agent… vs …pipeline…),
+// so the two "what this version did" cards look meaningfully different offline.
+
+export function mockEditPlan(projectId: string, renderId: string): EditPlan {
+  const isAgent = /agent/i.test(renderId);
+  const effects: EffectItem[] = isAgent
+    ? [
+        { type: 'shake', start_ms: 1500, end_ms: 2300, strength: 0.11 },
+        { type: 'zoom_in', start_ms: 8000, end_ms: 9200, strength: 0.12 },
+        { type: 'shake', start_ms: 16000, end_ms: 16800, strength: 0.1 },
+        { type: 'flash_transition', at_ms: 15000, duration_ms: 240 },
+      ]
+    : [
+        { type: 'zoom_in', start_ms: 0, end_ms: 1600, strength: 0.08 },
+        { type: 'zoom_in', start_ms: 15000, end_ms: 16600, strength: 0.08 },
+        { type: 'flash_transition', at_ms: 15000, duration_ms: 240 },
+      ];
+  const kw = isAgent ? ['笑死', '爆點', '太神了'] : ['成功了', '太神了'];
+  const cues: SubtitleCue[] = [
+    { start_ms: 0, end_ms: 3000, text: '欸欸欸來了來了！就是現在！', kind: 'caption', emphasis_words: ['來了', '現在'] },
+    {
+      start_ms: 11500,
+      end_ms: 15000,
+      text: '成功了！',
+      kind: 'keyword',
+      emphasis_words: kw.slice(0, 2),
+      animation: { type: 'pop', duration_ms: 260 },
+    },
+    {
+      start_ms: 18000,
+      end_ms: 21500,
+      text: '太神了',
+      kind: 'keyword',
+      emphasis_words: [kw[2] ?? '太神了'],
+      animation: { type: 'pop', duration_ms: 260 },
+    },
+  ];
+  return {
+    render_id: renderId,
+    effects: {
+      schema_version: 'effects.v1',
+      effect_seed: isAgent ? 771020 : 834710,
+      project_id: projectId,
+      render_id: renderId,
+      effects,
+    },
+    subtitle: { schema_version: 'subtitle.v1', language: 'zh-TW', project_id: projectId, render_id: renderId, cues },
+  };
 }

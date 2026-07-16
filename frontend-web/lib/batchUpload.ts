@@ -22,6 +22,7 @@ import {
   uploadChatCsv,
   uploadToS3,
 } from './api';
+import { saveEditIntent } from './editIntent';
 import { readVideoDurationMs } from './media';
 
 /** Per-file caps — MUST mirror the server (backend-api/app/settings.py + main.py). */
@@ -243,10 +244,13 @@ export interface BatchUploadShared {
   titlePrefix?: string;
 }
 
-/** One upload unit: a video paired with its chat-room LOG CSV. */
+/** One upload unit: a video paired with its chat-room LOG CSV, plus an optional
+ * 剪接指令 (natural-language prompt) that drives the 指令版 (agent) track. */
 export interface ChatUploadPair {
   video: File;
   log: File;
+  /** 剪接指令；留白 → 指令版套用預設模板。Saved client-side via saveEditIntent. */
+  prompt?: string;
 }
 
 export interface BatchItemResult {
@@ -305,7 +309,7 @@ export async function runBatchUpload(
       onUpdate(index, { status: 'failed', error: '已取消' });
       return { index, ok: false, error: '已取消' };
     }
-    const { video, log } = pair;
+    const { video, log, prompt } = pair;
     try {
       // 1) Create the chat project.
       onUpdate(index, { status: 'creating', pct: 0 });
@@ -318,6 +322,8 @@ export async function runBatchUpload(
         analysis_source: 'chat',
       });
       const projectId = created.project_id;
+      // Persist the 剪接指令 (drives the 指令版 track); blank → cleared → 模板.
+      saveEditIntent(projectId, prompt);
 
       // 2-3) Upload the video via S3 multipart (materializes source.mp4).
       onUpdate(index, { status: 'uploading', pct: 0, projectId });
