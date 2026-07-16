@@ -7,10 +7,12 @@
 // /analyze or /compose itself (they would 409 / race the auto-trigger).
 //
 // Concurrency model for high load (DEMO: many users, each up to 10GB):
-//   fileConcurrency (3) pairs upload at once, each video with partConcurrency (2)
-//   parts in flight → a global ceiling of ~6 simultaneous PUTs. Browsers cap ~6
-//   sockets per host and every part hits the same S3 bucket host, so going higher
-//   only queues and burns memory (≈ 16MiB partSize × 6 ≈ 96MB in flight).
+//   fileConcurrency (3) pairs upload at once; partConcurrency ADAPTS to how many
+//   files are actually in flight so the ~6-PUT budget is always filled instead of
+//   idling sockets: 1 file → 6 parts, 2 → 3, 3+ → 2. Browsers cap ~6 sockets per
+//   host and every part hits the same S3 bucket host, so ~6 is the ceiling (going
+//   higher only queues; ≈ 16MiB partSize × 6 ≈ 96MB in flight). A single big file
+//   used to crawl at 2 parts — this fills the pipe for it (~3× on a fat link).
 
 import {
   createChatUpload,
@@ -293,7 +295,10 @@ export async function runBatchUpload(
   opts?: { fileConcurrency?: number; partConcurrency?: number; signal?: AbortSignal },
 ): Promise<BatchItemResult[]> {
   const fileConcurrency = opts?.fileConcurrency ?? 3;
-  const partConcurrency = opts?.partConcurrency ?? 2;
+  // Fill the ~6-PUT browser socket budget by spreading it across the files that
+  // actually upload at once: 1 file → 6 parts, 2 → 3, 3+ → 2 (global stays ~6).
+  const effectiveFiles = Math.max(1, Math.min(fileConcurrency, pairs.length));
+  const partConcurrency = opts?.partConcurrency ?? Math.max(2, Math.floor(6 / effectiveFiles));
 
   return mapWithConcurrency(pairs, fileConcurrency, async (pair, index): Promise<BatchItemResult> => {
     if (opts?.signal?.aborted) {

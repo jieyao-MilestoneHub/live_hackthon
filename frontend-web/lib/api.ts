@@ -351,10 +351,12 @@ export async function analyzeProject(
   }
 }
 
-/** Options for uploadToS3. Defaults suit a single file; the batch orchestrator
- * caps overall in-flight PUTs via fileConcurrency × partConcurrency (3 × 2 = 6). */
+/** Options for uploadToS3. Defaults suit a SINGLE file (fills the ~6-socket
+ * budget); the batch orchestrator passes an adaptive value so N files sharing
+ * the host still total ~6 in-flight PUTs. */
 export interface UploadToS3Options {
-  /** Parts PUT concurrently for THIS file. Default 2. */
+  /** Parts PUT concurrently for THIS file. Default 6 (single-file; browsers cap
+   * ~6 sockets/host). The batch path lowers it per how many files run at once. */
   partConcurrency?: number;
   /** Abort in-flight and pending part PUTs (e.g. user cancels the batch). */
   signal?: AbortSignal;
@@ -398,7 +400,7 @@ export async function uploadToS3(
     onProgress?.(Math.min(100, Math.round(pct)));
   };
 
-  const partConcurrency = Math.max(1, opts?.partConcurrency ?? 2);
+  const partConcurrency = Math.max(1, opts?.partConcurrency ?? 6);
   let nextIdx = 0;
   const worker = async (): Promise<void> => {
     for (;;) {

@@ -151,7 +151,9 @@ export default function BatchUploader({
         const vid = fileId(chatPairs[index].video);
         setItems((prev) => ({ ...prev, [vid]: { ...(prev[vid] ?? { status: 'queued', pct: 0 }), ...patch } }));
       },
-      { fileConcurrency: 3, partConcurrency: 2 },
+      // partConcurrency omitted → runBatchUpload adapts it to the file count so a
+      // single/few large files fill the ~6-PUT budget instead of crawling at 2.
+      { fileConcurrency: 3 },
     );
     setRunning(false);
     setFinished(true);
