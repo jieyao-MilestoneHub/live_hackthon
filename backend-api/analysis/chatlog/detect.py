@@ -63,10 +63,13 @@ def detect_highlights_from_chat(
     p = {**DEFAULT_CHAT_PARAMS, **(params or {})}
     duration_ms = int(source_duration_ms)
 
-    vol = volume.hot_windows(
+    # sliding_hot_windows()：固定日曆分鐘桶會把剛好卡在分鐘交界的一波連續反應
+    # 切成兩半，兩邊都可能各自低於門檻而漏掉整波；滑動視窗（每 5 秒回看 60 秒）
+    # 不受分鐘邊界影響。回傳形狀與 hot_windows() 相容，此處為直接替換。
+    vol = volume.sliding_hot_windows(
         chatlog,
         sigma=float(p["hot_zone_sigma"]),
-        merge_gap_minutes=int(p["merge_gap_minutes"]),
+        merge_gap_ms=int(p["merge_gap_minutes"]) * 60_000,
     )
     cands = candidates.build_candidates(chatlog, vol, p)
 
