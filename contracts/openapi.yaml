@@ -399,7 +399,7 @@ paths:
 
   /artifacts/{artifact_id}/download:
     get:
-      summary: 取得最終產物的 Signed Download URL
+      summary: 取得最終產物的 Signed Download URL（attachment，存檔下載）
       operationId: getArtifactDownloadUrl
       parameters:
         - { name: artifact_id, in: path, required: true, schema: { type: string } }
@@ -410,6 +410,26 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DownloadUrl" }
         "403": { description: 內容審核封鎖，不可下載 }
+        "404": { description: 不存在 }
+        "501": { description: 尚未實作（M4） }
+
+  /artifacts/{artifact_id}/preview:
+    get:
+      summary: 取得最終產物的 Signed 內嵌預覽 URL（inline video/mp4，供 <video> 串流）（0.8.0）
+      description: >
+        與 download 相同的成品（final.mp4）與內容審核 gate，但以 inline disposition +
+        video/mp4 簽名，讓瀏覽器可用 HTML5 <video> 直接串流（支援 Range 拖動）預覽，
+        下載前先看成果。不會強制存檔。
+      operationId: getArtifactPreviewUrl
+      parameters:
+        - { name: artifact_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DownloadUrl" }
+        "403": { description: 內容審核封鎖，不可預覽 }
         "404": { description: 不存在 }
         "501": { description: 尚未實作（M4） }
 

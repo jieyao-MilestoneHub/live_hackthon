@@ -33,6 +33,28 @@ def resolve_part_count(part_count: int | None, size_bytes: int | None) -> int:
     return 1
 
 
+# Filename chars that must never reach a Content-Disposition header: the quote
+# that would break out of filename="…", path separators, and every C0/C7F
+# control char (covers CR/LF header-injection). Everything else passes through.
+_UNSAFE_FILENAME_CHARS = (
+    {ord(c): None for c in '"/\\'}
+    | {c: None for c in range(0x20)}
+    | {0x7F: None}
+)
+
+
+def content_disposition(disposition: str, filename: str | None = None) -> str:
+    """Build a ``Content-Disposition`` header value.
+
+    ``filename`` is stripped of quotes / path separators / all control chars so
+    it can't break out of the header or smuggle a path (header-injection
+    hardening)."""
+    if disposition == "inline" or not filename:
+        return disposition
+    safe = filename.translate(_UNSAFE_FILENAME_CHARS).strip() or "download"
+    return f'{disposition}; filename="{safe}"'
+
+
 class Storage(abc.ABC):
     @abc.abstractmethod
     def create_upload_session(
@@ -48,8 +70,22 @@ class Storage(abc.ABC):
         ``{part_number, etag}`` collected by the browser."""
 
     @abc.abstractmethod
-    def presigned_get(self, bucket: str, key: str) -> str:
-        """Return a presigned GET URL for downloading an object."""
+    def presigned_get(
+        self,
+        bucket: str,
+        key: str,
+        *,
+        disposition: str | None = None,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> str:
+        """Return a presigned GET URL for an object.
+
+        ``disposition`` ("inline" | "attachment") sets ``Content-Disposition`` on
+        the signed response: "inline" streams into an in-page ``<video>``,
+        "attachment" forces a save-to-disk download (with ``filename``). Default
+        None preserves S3's stored metadata (legacy behaviour). ``content_type``
+        overrides the served ``Content-Type`` (e.g. force ``video/mp4``)."""
 
     @abc.abstractmethod
     def presigned_put(self, bucket: str, key: str, content_type: str | None = None) -> str:
@@ -128,7 +164,17 @@ class StubStorage(Storage):
         # object_exists-style checks / downstream reads don't 404.
         self._blobs[(self._settings.raw_bucket, key)] = b"stub-source"
 
-    def presigned_get(self, bucket: str, key: str) -> str:
+    def presigned_get(
+        self,
+        bucket: str,
+        key: str,
+        *,
+        disposition: str | None = None,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> str:
+        # Offline stub: disposition/content_type are irrelevant (no real S3 to
+        # sign against), accept them for signature parity with S3Storage.
         return f"http://localhost:8080/stub-download/{bucket}/{key}"
 
     def presigned_put(self, bucket: str, key: str, content_type: str | None = None) -> str:
@@ -239,10 +285,25 @@ class S3Storage(Storage):
             },
         )
 
-    def presigned_get(self, bucket: str, key: str) -> str:
+    def presigned_get(
+        self,
+        bucket: str,
+        key: str,
+        *,
+        disposition: str | None = None,
+        filename: str | None = None,
+        content_type: str | None = None,
+    ) -> str:
+        params: dict[str, Any] = {"Bucket": bucket, "Key": key}
+        if disposition:
+            # Signed response-header override. Must be set at signing time — it is
+            # part of the SigV4 canonical query string, so it can't be added later.
+            params["ResponseContentDisposition"] = content_disposition(disposition, filename)
+        if content_type:
+            params["ResponseContentType"] = content_type
         return self._client.generate_presigned_url(
             "get_object",
-            Params={"Bucket": bucket, "Key": key},
+            Params=params,
             ExpiresIn=self._settings.presign_expiry_sec,
         )
 

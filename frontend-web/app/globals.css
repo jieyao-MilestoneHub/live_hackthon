@@ -813,6 +813,13 @@ input[type="checkbox"] {
   font-size: 12px;
   letter-spacing: 0.08em;
 }
+.preview__video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
 
 /* ---------- Progress bar (determinate) ---------- */
 .bar {

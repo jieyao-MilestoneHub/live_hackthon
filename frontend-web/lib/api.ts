@@ -1,4 +1,4 @@
-// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.7.0).
+// Typed client for the 浪 LIVE Editor API (contracts/openapi.yaml v0.8.0).
 // Base URL from NEXT_PUBLIC_API_BASE_URL (baked at build time).
 //
 // Mock fallback is DEV-ONLY: it kicks in only when the base URL points at
@@ -585,7 +585,7 @@ export async function getRender(renderId: string): Promise<Render> {
   }
 }
 
-/** GET /artifacts/{id}/download — signed URL for the finished short video. */
+/** GET /artifacts/{id}/download — signed attachment URL (saves the file to disk). */
 export async function getDownloadUrl(artifactId: string): Promise<DownloadUrl> {
   try {
     return await request<DownloadUrl>(
@@ -594,6 +594,19 @@ export async function getDownloadUrl(artifactId: string): Promise<DownloadUrl> {
   } catch (err) {
     if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] getDownloadUrl fell back to mock:', err);
+    return mockDownloadUrl(artifactId);
+  }
+}
+
+/** GET /artifacts/{id}/preview — signed inline URL for in-page <video> streaming. */
+export async function getPreviewUrl(artifactId: string): Promise<DownloadUrl> {
+  try {
+    return await request<DownloadUrl>(
+      `/artifacts/${encodeURIComponent(artifactId)}/preview`,
+    );
+  } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
+    console.warn('[api] getPreviewUrl fell back to mock:', err);
     return mockDownloadUrl(artifactId);
   }
 }
