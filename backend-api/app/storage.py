@@ -184,10 +184,17 @@ class S3Storage(Storage):
         # the signature (StringToSign), so a browser PUT that doesn't send that
         # exact Content-Type gets SignatureDoesNotMatch (403). SigV4 signs only the
         # host (UNSIGNED-PAYLOAD), so the browser's presigned video/chat upload works.
+        # addressing_style: "path" makes presigned URLs use s3.amazonaws.com/<bucket>/…
+        # instead of the per-bucket virtual-hosted subdomain, which some client
+        # networks/resolvers fail to resolve (browser ERR_NAME_NOT_RESOLVED). "auto"
+        # (default) preserves boto3's virtual-hosted behaviour.
         self._client = boto3.client(
             "s3",
             region_name=settings.aws_region,
-            config=Config(signature_version="s3v4"),
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": settings.s3_addressing_style},
+            ),
         )
 
     def create_upload_session(

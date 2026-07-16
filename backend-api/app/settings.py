@@ -37,6 +37,11 @@ class Settings:
     # Content moderation feature flag. When False the publish gates are skipped
     # (pre-moderation projects / disabled deployments are never blocked).
     moderation_enabled: bool = True
+    # S3 presigned-URL addressing style: "auto" (default, virtual-hosted
+    # <bucket>.s3.amazonaws.com), "virtual", or "path" (s3.amazonaws.com/<bucket>).
+    # Set "path" when a client network can't resolve the per-bucket virtual-hosted
+    # subdomain (browser ERR_NAME_NOT_RESOLVED on multipart part PUT).
+    s3_addressing_style: str = "auto"
 
     def source_key(self, tenant_id: str, project_id: str, filename: str = "source.mp4") -> str:
         """Raw-bucket object key per demand.md §十六."""
@@ -100,4 +105,5 @@ def get_settings() -> Settings:
         max_upload_bytes=int(os.environ.get("MAX_UPLOAD_BYTES", str(10 * 1024**3))),
         max_batch_files=int(os.environ.get("MAX_BATCH_FILES", "20")),
         moderation_enabled=_env_bool("MODERATION_ENABLED", default=True),
+        s3_addressing_style=os.environ.get("S3_ADDRESSING_STYLE", "auto"),
     )
