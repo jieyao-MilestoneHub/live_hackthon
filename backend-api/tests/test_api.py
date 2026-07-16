@@ -13,7 +13,7 @@ from app.main import _new_project_id, _slugify_title
 # optional (Chinese-only titles drop it), and the whole id stays [a-z0-9-] so it
 # is safe as a Transcribe job name / Rekognition collection id and needs no
 # URL-encoding in the EventBridge S3-event key.
-_PROJECT_ID_RE = re.compile(r"^project-\d{8}-\d{6}(?:-[a-z0-9-]+?)?-[0-9a-f]{8}$")
+_PROJECT_ID_RE = re.compile(r"^project-\d{8}-\d{6}(?:-[a-z0-9-]+?)?-[0-9a-f]{12}$")
 
 
 def test_health(client) -> None:
