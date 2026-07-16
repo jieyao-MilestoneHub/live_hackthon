@@ -48,6 +48,7 @@ import type {
 import StatusPill from '@/components/StatusPill';
 import StageRail from '@/components/StageRail';
 import ModerationBanner from '@/components/ModerationBanner';
+import ProgressFeed from '@/components/ProgressFeed';
 import ScoreMeter from '@/components/ScoreMeter';
 import HighlightWave from '@/components/HighlightWave';
 
@@ -899,6 +900,7 @@ function ProjectView() {
             <span className="panel__eyebrow">PROCESSING</span>
           </div>
           <HighlightWave mode="scan" height={120} />
+          <ProgressFeed projectId={project.project_id} active={isPollable(project.status)} />
           <p className="hint mono">處理中 · 每 {POLL_INTERVAL_MS / 1000}s 自動更新狀態…</p>
         </div>
       )}

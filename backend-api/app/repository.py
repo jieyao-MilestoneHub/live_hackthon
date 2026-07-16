@@ -41,6 +41,7 @@ def _timeline_sk(version: int) -> str:
 _RENDER_SK_PREFIX = "RENDER#"
 _ARTIFACT_SK_PREFIX = "ARTIFACT#"
 _MODERATION_SK_PREFIX = "MODERATION#"
+_PROGRESS_SK_PREFIX = "PROGRESS#"
 _POINTER_SK = "POINTER"
 
 
@@ -48,6 +49,12 @@ def _moderation_sk(event: dict[str, Any]) -> str:
     """Time-ordered, unique SK so a Query returns the audit trail chronologically
     and a conditional-put never collides (immutability)."""
     return f"{_MODERATION_SK_PREFIX}{event.get('decided_at', '')}#{event['moderation_id']}"
+
+
+def _progress_sk(event: dict[str, Any]) -> str:
+    """Time-ordered, unique SK: a Query returns the progress feed oldest→newest and
+    the conditional-put never collides (append-only). Needs ``created_at`` + ``progress_id``."""
+    return f"{_PROGRESS_SK_PREFIX}{event.get('created_at', '')}#{event['progress_id']}"
 
 
 def _render_pk(render_id: str) -> str:
@@ -162,6 +169,18 @@ class ProjectRepository(abc.ABC):
     def list_moderation_events(self, project_id: str) -> list[dict[str, Any]]:
         """Return the project's moderation audit trail, oldest→newest (empty if none)."""
 
+    @abc.abstractmethod
+    def put_progress_event(self, project_id: str, event: dict[str, Any]) -> None:
+        """Append an IMMUTABLE progress-narration record (SK ``PROGRESS#{ts}#{id}``).
+
+        Append-only, mirroring moderation events: existing rows are never
+        overwritten. ``event`` must contain ``progress_id`` + ``created_at``.
+        """
+
+    @abc.abstractmethod
+    def list_progress_events(self, project_id: str) -> list[dict[str, Any]]:
+        """Return the project's progress feed, oldest→newest (empty if none)."""
+
 
 class InMemoryProjectRepository(ProjectRepository):
     """Process-local store for offline dev / tests."""
@@ -175,6 +194,7 @@ class InMemoryProjectRepository(ProjectRepository):
         self._artifacts: dict[tuple[str, str], dict[str, Any]] = {}
         self._artifact_pointers: dict[str, str] = {}
         self._moderation: dict[str, list[dict[str, Any]]] = {}
+        self._progress: dict[str, list[dict[str, Any]]] = {}
 
     def create_project(self, item: dict[str, Any]) -> dict[str, Any]:
         project_id = item["project_id"]
@@ -283,6 +303,13 @@ class InMemoryProjectRepository(ProjectRepository):
     def list_moderation_events(self, project_id: str) -> list[dict[str, Any]]:
         events = self._moderation.get(project_id, [])
         return copy.deepcopy(sorted(events, key=lambda e: e.get("decided_at", "")))
+
+    def put_progress_event(self, project_id: str, event: dict[str, Any]) -> None:
+        self._progress.setdefault(project_id, []).append(copy.deepcopy(event))
+
+    def list_progress_events(self, project_id: str) -> list[dict[str, Any]]:
+        events = self._progress.get(project_id, [])
+        return copy.deepcopy(sorted(events, key=lambda e: e.get("created_at", "")))
 
 
 def _coerce_numbers(value: Any) -> Any:
@@ -591,6 +618,38 @@ class DynamoProjectRepository(ProjectRepository):
         resp = self._table.query(
             KeyConditionExpression=Key(_PK).eq(_project_pk(project_id))
             & Key(_SK).begins_with(_MODERATION_SK_PREFIX),
+        )
+        # SK is time-prefixed, so Query already returns oldest→newest.
+        return [self._strip_keys(it) for it in resp.get("Items", [])]
+
+    def put_progress_event(self, project_id: str, event: dict[str, Any]) -> None:
+        from botocore.exceptions import ClientError
+
+        record = {
+            _PK: _project_pk(project_id),
+            _SK: _progress_sk(event),
+            **{k: v for k, v in event.items() if v is not None},
+        }
+        try:
+            # attribute_not_exists ⇒ never overwrite an existing progress row (append-only).
+            self._table.put_item(
+                Item=_to_dynamo(record),
+                ConditionExpression="attribute_not_exists(#pk)",
+                ExpressionAttributeNames={"#pk": _PK},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                raise KeyError(
+                    f"progress event {event.get('progress_id')} already exists for {project_id}"
+                ) from exc
+            raise
+
+    def list_progress_events(self, project_id: str) -> list[dict[str, Any]]:
+        from boto3.dynamodb.conditions import Key
+
+        resp = self._table.query(
+            KeyConditionExpression=Key(_PK).eq(_project_pk(project_id))
+            & Key(_SK).begins_with(_PROGRESS_SK_PREFIX),
         )
         # SK is time-prefixed, so Query already returns oldest→newest.
         return [self._strip_keys(it) for it in resp.get("Items", [])]

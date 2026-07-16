@@ -31,6 +31,7 @@ from analysis import highlights_llm, moderation_policy
 from analysis.chatlog import clean_chatlog
 from app.aws import factory, orchestration
 from app.aws.config import get_attribution_config
+from app.progress import StepKey, get_progress_reporter
 from app.repository import get_repository
 from app.settings import get_settings
 from app.state import (
@@ -98,6 +99,10 @@ def validate_source(event: dict[str, Any], context: Any = None) -> dict[str, Any
     project_id = _project_id(event)
     project = _require_project(project_id)
     get_repository().update_project(project_id, {"status": ProjectState.ANALYZING.value})
+    get_progress_reporter().step(
+        project_id, StepKey.VALIDATING, phase=ProjectState.ANALYZING.value,
+        facts={"inputs": ["來源影片"], "analysis": "驗證編碼與時間基準"},
+    )
     bucket = project.get("source_bucket") or settings.raw_bucket
     key = project.get("source_key")
     return {
@@ -206,6 +211,10 @@ def start_moderation(event: dict[str, Any], context: Any = None) -> dict[str, An
     except Exception:  # noqa: BLE001 — visual scan is best-effort; text scan still runs at the gate
         log.exception("moderation: start_visual_moderation failed for %s", project_id)
         get_repository().update_project(project_id, {"moderation_job_id": None})
+    get_progress_reporter().step(
+        project_id, StepKey.MODERATION_SCAN, phase=ProjectState.ANALYZING.value,
+        facts={"inputs": ["畫面", "字幕"], "analysis": "內容合規掃描"},
+    )
     return {"project_id": project_id, "status": "STARTED"}
 
 
@@ -272,6 +281,10 @@ def moderation_decision(event: dict[str, Any], context: Any = None) -> dict[str,
         visual={"provider": "rekognition", "job_status": visual["status"], "labels": visual_labels},
         text={"provider": "bedrock", "model_id": config.moderation_model_id, "findings": text_findings},
     )
+    get_progress_reporter().step(
+        project_id, StepKey.MODERATION_DECISION, phase=ProjectState.ANALYZING.value,
+        facts={"inputs": ["視覺風險", "文字風險"], "analysis": "彙整判定發布分級", "verdict": status},
+    )
     return {"project_id": project_id, "status": status}
 
 
@@ -337,6 +350,10 @@ def transcribe(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         language_code=config.language_code,
         max_speakers=config.max_speaker_labels,
     )
+    get_progress_reporter().step(
+        project_id, StepKey.TRANSCRIBING, phase=ProjectState.ANALYZING.value,
+        facts={"inputs": ["直播音訊"], "analysis": "語音轉文字＋說話者分離"},
+    )
     return {"project_id": project_id, "status": "STARTED"}
 
 
@@ -388,6 +405,14 @@ def detect_highlights(event: dict[str, Any], context: Any = None) -> dict[str, A
             repo.put_highlights(project_id, enriched)
             result = {**result, "highlights": enriched}
 
+    get_progress_reporter().step(
+        project_id, StepKey.DETECTING_HIGHLIGHTS, phase=ProjectState.COMPOSING.value,
+        facts={
+            "inputs": ["逐字稿", "聊天室反應"],
+            "signals": ["情緒轉折", "關鍵字密度", "聊天室熱度"],
+            "found": len(result["highlights"]),
+        },
+    )
     return {"project_id": project_id, "highlight_count": len(result["highlights"])}
 
 
@@ -406,6 +431,11 @@ def compose_timeline(event: dict[str, Any], context: Any = None) -> dict[str, An
         settings.timeline_key(tenant_id, project_id, timeline["version"]),
         timeline,
     )
+    clips = len(timeline.get("clips", []) or [])
+    get_progress_reporter().step(
+        project_id, StepKey.COMPOSING, phase=ProjectState.COMPOSING.value,
+        facts={"beats": "起承轉合", "clips": clips, "analysis": "編排初剪時間軸"},
+    )
     return {
         "project_id": project_id,
         "timeline_version": timeline["version"],
@@ -415,7 +445,18 @@ def compose_timeline(event: dict[str, Any], context: Any = None) -> dict[str, An
 
 def mark_ready(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
     """Explicit terminal (composer already set READY_TO_EDIT) for observability."""
-    return {"project_id": _project_id(event), "status": ProjectState.READY_TO_EDIT.value}
+    project_id = _project_id(event)
+    clips = None
+    try:
+        timeline = get_repository().get_timeline(project_id)
+        clips = len(timeline.get("clips", []) or []) if timeline else None
+    except Exception:  # noqa: BLE001 — facts are best-effort; narration is additive
+        clips = None
+    get_progress_reporter().step(
+        project_id, StepKey.READY, phase=ProjectState.READY_TO_EDIT.value,
+        facts={"clips": clips}, status="DONE",
+    )
+    return {"project_id": project_id, "status": ProjectState.READY_TO_EDIT.value}
 
 
 def mark_blocked(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
@@ -629,10 +670,19 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             })
             continue
         storage.put_json(settings.work_bucket, settings.chatlog_key(tenant_id, project_id), chatlog)
+        get_progress_reporter().step(
+            project_id, StepKey.ANALYZING_CHATLOG, phase=ProjectState.ANALYZING.value,
+            facts={"inputs": ["聊天室 LOG"], "signals": ["情緒起伏", "洗版熱區"],
+                   "messages": len(chatlog["messages"])},
+        )
 
         # 1b) content moderation (text) — chat runs inline (no analysis SFN), so
         # scan chat messages here. BLOCKED stops the pipeline before analysis.
         mod_status = _moderate_chat_text(project_id, tenant_id, chatlog["messages"])
+        get_progress_reporter().step(
+            project_id, StepKey.MODERATION_DECISION, phase=ProjectState.ANALYZING.value,
+            facts={"inputs": ["聊天訊息"], "analysis": "內容合規判定", "verdict": mod_status},
+        )
         if mod_status == ModerationStatus.BLOCKED.value:
             repo.update_project(project_id, {
                 "status": ProjectState.FAILED.value,
@@ -646,6 +696,11 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         # 2) analyze → COMPOSING (chat-relative timebase; no video probe in auto mode)
         advance_to_analyzing(repo, project_id, ProjectState(repo.get_project(project_id)["status"]))
         result = chat_analysis_worker.run(repo, project_id, chatlog)
+        get_progress_reporter().step(
+            project_id, StepKey.DETECTING_HIGHLIGHTS, phase=ProjectState.COMPOSING.value,
+            facts={"inputs": ["聊天室熱度", "情緒反應"], "signals": ["情緒轉折", "聊天室熱度"],
+                   "found": len(result["highlights"])},
+        )
 
         # 3) compose → READY_TO_EDIT (+ persist timeline for the render plane)
         timeline = composer_worker.run(repo, project_id)
@@ -653,6 +708,11 @@ def chat_starter(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             settings.work_bucket,
             settings.timeline_key(tenant_id, project_id, timeline["version"]),
             timeline,
+        )
+        get_progress_reporter().step(
+            project_id, StepKey.COMPOSING, phase=ProjectState.COMPOSING.value,
+            facts={"beats": "起承轉合", "clips": len(timeline.get("clips", []) or []),
+                   "analysis": "編排初剪時間軸"},
         )
 
         # 4) render: only auto-render when moderation permits publishing. A FLAGGED

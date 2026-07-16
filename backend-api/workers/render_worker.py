@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from analysis.validate import validate_artifact
+from app.progress import StepKey, get_progress_reporter, report_render_stage
 from app.repository import ProjectRepository
 from app.settings import get_settings
 from app.state import (
@@ -208,7 +209,9 @@ def _advance(
     patch = {"status": target.value, "current_stage": stage}
     if extra:
         patch.update(extra)
-    return repo.update_render(project_id, render_id, patch)
+    updated = repo.update_render(project_id, render_id, patch)
+    report_render_stage(project_id, target.value)  # narrate this render sub-step (best-effort)
+    return updated
 
 
 def run(
@@ -370,4 +373,24 @@ def run(
     # 為 last-wins；GET /projects/{id}/artifacts（list_artifacts）才是雙軌下載的真相。
     advance_project_if_allowed(repo, project_id, ProjectState.ARTIFACT_READY)
     repo.update_project(project_id, {"latest_artifact_id": artifact_id})
+
+    # 收尾：AI 全流程統整（一句話交代來源、依據、選段、成品）。best-effort facts。
+    source_duration_ms = None
+    clips = None
+    try:
+        proj = repo.get_project(project_id)
+        source_duration_ms = (proj or {}).get("source_duration_ms")
+        timeline = repo.get_timeline(project_id, tv)
+        clips = len(timeline.get("clips", []) or []) if timeline else None
+    except Exception:  # noqa: BLE001 — facts 皆 best-effort
+        pass
+    get_progress_reporter().step(
+        project_id, StepKey.SUMMARY, phase=ProjectState.ARTIFACT_READY.value, status="DONE",
+        facts={
+            "source_duration_ms": source_duration_ms,
+            "clips": clips,
+            "output_duration_ms": artifact.get("duration_ms"),
+            "signals": ["情緒高峰", "聊天室熱度"],
+        },
+    )
     return artifact

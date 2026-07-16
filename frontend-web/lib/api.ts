@@ -21,6 +21,7 @@ import type {
   DownloadUrl,
   HighlightList,
   ModerationView,
+  ProgressView,
   Project,
   ProjectCreate,
   ProjectCreated,
@@ -451,6 +452,19 @@ export async function getModeration(projectId: string): Promise<ModerationView> 
     if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
     console.warn('[api] getModeration fell back to empty view:', err);
     return { project_id: projectId, status: 'PENDING', events: [] };
+  }
+}
+
+/** GET /projects/{id}/progress — AI 統整的即時進度旁白 feed（oldest→newest）。 */
+export async function getProgress(projectId: string): Promise<ProgressView> {
+  try {
+    return await request<ProgressView>(
+      `/projects/${encodeURIComponent(projectId)}/progress`,
+    );
+  } catch (err) {
+    if (!ALLOW_MOCK || !isOfflineError(err)) throw err;
+    console.warn('[api] getProgress fell back to empty view:', err);
+    return { project_id: projectId, events: [] };
   }
 }
 

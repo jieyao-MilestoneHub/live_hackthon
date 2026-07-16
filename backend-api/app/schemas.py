@@ -132,6 +132,28 @@ class ModerationView(BaseModel):
     events: list[ModerationEvent] = Field(default_factory=list)
 
 
+class ProgressEvent(BaseModel):
+    """One progress.v1 narration record — an AI-synthesized, human-readable line
+    describing what the pipeline is doing at a given step (append-only, immutable)."""
+
+    schema_version: Literal["progress.v1"] = "progress.v1"
+    progress_id: str
+    project_id: str
+    step: str = Field(..., description="機器穩定的步驟代碼（StepKey），如 DETECTING_HIGHLIGHTS")
+    phase: ProjectState | None = Field(default=None, description="事件當下的粗粒度生命週期狀態")
+    status: Literal["RUNNING", "DONE", "FAILED"] = "RUNNING"
+    message: str = Field(..., description="AI 統整的一句進度旁白（資訊量多但精簡，不含技術細節）")
+    created_at: str | None = None
+
+
+class ProgressView(BaseModel):
+    """GET /projects/{id}/progress response: latest narration + chronological feed."""
+
+    project_id: str
+    latest: ProgressEvent | None = None
+    events: list[ProgressEvent] = Field(default_factory=list)
+
+
 class ModerationOverrideRequest(BaseModel):
     """POST /projects/{id}/moderation/override body (moderator-only)."""
 

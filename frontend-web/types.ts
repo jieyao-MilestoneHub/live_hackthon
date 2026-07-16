@@ -61,6 +61,27 @@ export interface ModerationView {
   events: ModerationEvent[];
 }
 
+/** One AI-synthesized progress narration record (openapi: ProgressEvent / progress.v1). */
+export interface ProgressEvent {
+  schema_version: 'progress.v1';
+  progress_id: string;
+  project_id: string;
+  /** Machine-stable step code (StepKey), e.g. DETECTING_HIGHLIGHTS. */
+  step: string;
+  phase?: string | null;
+  status: 'RUNNING' | 'DONE' | 'FAILED';
+  /** AI 統整的一句進度旁白（資訊量多但精簡）。 */
+  message: string;
+  created_at?: string;
+}
+
+/** GET /projects/{id}/progress response (openapi: ProgressView). */
+export interface ProgressView {
+  project_id: string;
+  latest?: ProgressEvent | null;
+  events: ProgressEvent[];
+}
+
 /** Request body for POST /projects (openapi: ProjectCreate). */
 export interface ProjectCreate {
   title?: string;

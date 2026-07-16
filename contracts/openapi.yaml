@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: 浪 LIVE Editor API
-  version: 0.7.0
+  version: 0.8.0
   description: >
     影片高光剪輯「編輯器控制面」API（前後端共用契約）。M1 Project/毫秒版：
     核心實體為 Project、時間一律毫秒（ms）、雙 pipeline（分析組片 + 渲染）。
@@ -451,6 +451,24 @@ paths:
         "403": { description: 需要 moderator 角色 }
         "404": { description: project 不存在 }
 
+  /projects/{id}/progress:
+    get:
+      summary: 查詢專案的 AI 即時進度旁白 feed（0.8.0）
+      operationId: getProgress
+      description: >
+        產出流程每個語意步驟（轉錄／高光偵測／審核／組片／字幕／特效／編碼／發布）由 AI
+        統整成一句「資訊量多但精簡」的繁中訊息，不可變、時間遞增，供前端輪詢即時展示，
+        讓使用者不再面對黑盒子。訊息為動態生成（離線/失敗退回確定性模板），非寫死。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProgressView" }
+        "404": { description: project 不存在 }
+
 components:
   securitySchemes:
     # 0.3.0：控制面以 Cognito 使用者池 JWT 授權（API Gateway JWT authorizer）。
@@ -497,6 +515,43 @@ components:
           type: array
           description: 不可變稽核歷程（SCAN / REVIEW / OVERRIDE），時間遞增
           items: { $ref: "#/components/schemas/Moderation" }
+
+    ProgressView:
+      type: object
+      description: GET /projects/{id}/progress 回應：最新旁白 + 時間遞增的進度 feed。
+      required: [project_id, events]
+      properties:
+        project_id: { type: string }
+        latest:
+          description: 最新一筆進度旁白（可能為 null，若尚未有事件）
+          allOf: [{ $ref: "#/components/schemas/ProgressEvent" }]
+        events:
+          type: array
+          description: 不可變進度歷程，時間遞增（oldest→newest）
+          items: { $ref: "#/components/schemas/ProgressEvent" }
+
+    ProgressEvent:
+      type: object
+      description: progress.v1 進度旁白紀錄（AI 統整、不可變、附加）。
+      required: [schema_version, progress_id, project_id, step, status, message]
+      properties:
+        schema_version: { type: string, enum: ["progress.v1"] }
+        progress_id: { type: string }
+        project_id: { type: string }
+        step:
+          type: string
+          description: 機器穩定的步驟代碼（StepKey），如 DETECTING_HIGHLIGHTS
+        phase:
+          description: 事件當下的粗粒度生命週期狀態
+          allOf: [{ $ref: "#/components/schemas/ProjectState" }]
+          nullable: true
+        status:
+          type: string
+          enum: [RUNNING, DONE, FAILED]
+        message:
+          type: string
+          description: AI 統整的一句進度旁白（資訊量多但精簡，不含技術細節）
+        created_at: { type: string, format: date-time }
 
     ModerationOverride:
       type: object
